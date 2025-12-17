@@ -29,7 +29,6 @@ EXAM_DATE = datetime.date(2026, 3, 4)
 st.set_page_config(page_title="新潟高校 合格ナビ", layout="wide")
 st.title("🏔️ 新潟高校 合格ストラテジー & 徹底復習")
 
-# データ保存用の領域初期化
 if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
 if 'textbooks' not in st.session_state: st.session_state['textbooks'] = {}
 if 'confirm_delete' not in st.session_state: st.session_state['confirm_delete'] = False
@@ -52,8 +51,6 @@ st.sidebar.subheader("💾 保存されたデータ")
 
 if st.session_state['data_store']:
     st.sidebar.success(f"{len(st.session_state['data_store'])} 件のファイルを記憶中")
-    
-    # 削除確認ロジック
     if not st.session_state['confirm_delete']:
         if st.sidebar.button("🗑️ データを全消去"):
             st.session_state['confirm_delete'] = True
@@ -75,37 +72,46 @@ else:
 # 2. 関数定義
 # ---------------------------------------------------------
 def parse_csv(file):
-    """CSVを読み込む関数（文字コード対応版）"""
+    """CSVを読み込む関数（列ズレ・文字コード自動対応版）"""
     try:
-        # ファイルポインタを初期位置に
         file.seek(0)
-        
-        # まず一般的なUTF-8で試す
         try:
             df = pd.read_csv(file, header=None)
         except UnicodeDecodeError:
-            # 失敗したらShift-JIS (Excel形式) で試す
             file.seek(0)
             df = pd.read_csv(file, header=None, encoding='cp932')
         
-        # 読み込み成功後、必要な行を探す
-        header_idx = df[df.apply(lambda r: r.astype(str).str.contains('大問|内容').any(), axis=1)].index
+        # '大問' や '内容' が含まれる行を探す
+        header_row_mask = df.apply(lambda r: r.astype(str).str.contains('大問|内容').any(), axis=1)
         
-        if len(header_idx) > 0:
-            idx = header_idx[0]
-            subset = df.iloc[idx:].reset_index(drop=True).T
+        if len(df[header_row_mask]) > 0:
+            idx = df[header_row_mask].index[0] # ヘッダーがある行番号
+            
+            # その行の中で、'大問'などが実際に始まる列番号を探す
+            target_row = df.iloc[idx]
+            col_idx = 0
+            for c in df.columns:
+                val = str(target_row[c])
+                if '大問' in val or '内容' in val:
+                    col_idx = c
+                    break
+            
+            # ヘッダー行以降、かつ有効な列以降を切り出す
+            subset = df.iloc[idx:, col_idx:].reset_index(drop=True).T
+            
+            # 1行目をヘッダーにする
             subset.columns = subset.iloc[0]
             subset = subset[1:]
             
-            # 不要な行の削除と数値化
+            # 不要な行削除
             if '大問' in subset.columns:
                 subset = subset.dropna(subset=['大問'])
             
+            # 数値変換（エラーは0に）
             subset['点数'] = pd.to_numeric(subset['点数'], errors='coerce').fillna(0)
             subset['配点'] = pd.to_numeric(subset['配点'], errors='coerce').fillna(0)
             subset['ファイル名'] = file.name
             
-            # 教科判定
             for sub in ['数学','英語','理科','社会','国語']:
                 if sub in file.name:
                     subset['教科'] = sub
@@ -113,11 +119,12 @@ def parse_csv(file):
             else:
                 subset['教科'] = 'その他'
             
-            return subset
-        else:
-            # '大問'などのキーワードが見つからない場合
+            # 必須項目があるか最終チェック
+            if '点数' in subset.columns:
+                return subset
             return None
-            
+        else:
+            return None
     except Exception:
         return None
 
@@ -132,10 +139,10 @@ def ask_gemini_vision(prompt, image_list):
         response = model_vision.generate_content(content)
         return response.text
     except Exception as e:
-        return f"エラーが発生しました: {e}"
+        return f"エラー: {e}"
 
 # ---------------------------------------------------------
-# 3. メイン画面（ファイルアップロード）
+# 3. メイン画面
 # ---------------------------------------------------------
 st.markdown("##### 📂 学習データのアップロード（CSV）")
 st.caption("Excel等で作成したCSVも読み込めます。")
@@ -146,7 +153,7 @@ with st.form("upload_form", clear_on_submit=True):
     
     if submit_upload and uploaded_files:
         new_c, over_c = 0, 0
-        error_count = 0
+        error_files = []
         
         for file in uploaded_files:
             df = parse_csv(file)
@@ -155,13 +162,13 @@ with st.form("upload_form", clear_on_submit=True):
                 else: new_c += 1
                 st.session_state['data_store'][file.name] = df
             else:
-                error_count += 1
+                error_files.append(file.name)
         
         if new_c > 0 or over_c > 0:
             st.success(f"✅ 新規:{new_c}件 / 上書き:{over_c}件 保存完了")
         
-        if error_count > 0:
-            st.error(f"⚠️ {error_count}件のファイルは形式が読み取れませんでした。")
+        if error_files:
+            st.error(f"⚠️ 以下のファイルは形式が読み取れませんでした:\n{', '.join(error_files)}")
 
 # ---------------------------------------------------------
 # 4. 機能タブ
