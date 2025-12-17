@@ -3,6 +3,8 @@ import pandas as pd
 import google.generativeai as genai
 import datetime
 import PIL.Image
+import json
+import re
 
 # ==========================================
 # 🔐 セキュリティ設定
@@ -32,6 +34,38 @@ st.title("🏔️ 新潟高校 合格ストラテジー & 徹底復習")
 if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
 if 'textbooks' not in st.session_state: st.session_state['textbooks'] = {}
 if 'confirm_delete' not in st.session_state: st.session_state['confirm_delete'] = False
+if 'category_map' not in st.session_state: st.session_state['category_map'] = {}
+
+# ==========================================
+# 📌 ここに12分類（+国語5分類）を直接定義しました
+# ==========================================
+FIXED_CATEGORIES = {
+    "国語": [
+        "漢字", "文法", "評論", "古文", "その他"
+    ],
+    "数学": [
+        "数と式", "方程式・不等式", "関数(比例・1次)", "関数(2次・その他)", 
+        "平面図形", "空間図形", "図形の証明", "確率", 
+        "データの活用", "整数・規則性", "作図", "融合問題・その他"
+    ],
+    "英語": [
+        "単語・語彙", "文法(時制・動詞)", "文法(準動詞・関係詞)", "文法(その他)", 
+        "長文読解(物語)", "長文読解(説明文)", "英作文", "リスニング", 
+        "会話文", "語順整序", "適語補充", "その他"
+    ],
+    "理科": [
+        "物理(光・音・力)", "物理(電気・磁界)", "物理(運動・エネルギー)", 
+        "化学(物質・気体)", "化学(変化・原子)", "化学(イオン・電池)", 
+        "生物(植物)", "生物(動物・人体)", "生物(遺伝・進化)", 
+        "地学(火山・地層)", "地学(天気・気象)", "地学(天体)"
+    ],
+    "社会": [
+        "地理(世界)", "地理(日本)", "地理(資料読取)", 
+        "歴史(古代～中世)", "歴史(近世)", "歴史(近現代)", 
+        "公民(現代社会・人権)", "公民(政治)", "公民(経済)", "公民(国際)", 
+        "融合問題", "その他"
+    ]
+}
 
 # --- サイドバー ---
 st.sidebar.header("📚 使用教材の設定")
@@ -60,6 +94,7 @@ if st.session_state['data_store']:
         col_yes, col_no = st.sidebar.columns(2)
         if col_yes.button("はい、削除", type="primary"):
             st.session_state['data_store'] = {}
+            st.session_state['category_map'] = {}
             st.session_state['confirm_delete'] = False
             st.rerun()
         if col_no.button("キャンセル"):
@@ -72,7 +107,6 @@ else:
 # 2. 関数定義
 # ---------------------------------------------------------
 def parse_csv(file):
-    """CSVを読み込む関数"""
     try:
         file.seek(0)
         try:
@@ -82,7 +116,6 @@ def parse_csv(file):
             df = pd.read_csv(file, header=None, encoding='cp932')
         
         header_row_mask = df.apply(lambda r: r.astype(str).str.contains('大問|内容').any(), axis=1)
-        
         if len(df[header_row_mask]) > 0:
             idx = df[header_row_mask].index[0]
             target_row = df.iloc[idx]
@@ -94,17 +127,15 @@ def parse_csv(file):
                     break
             
             subset = df.iloc[idx:, col_idx:].reset_index(drop=True).T
-            
-            # カラム名を文字列型に強制変換（これがエラー対策の肝です）
-            subset.columns = subset.iloc[0].astype(str)
+            new_cols = [str(val).strip() for val in subset.iloc[0]]
+            subset.columns = new_cols
+            subset.columns.name = None
             subset = subset[1:]
             
-            if '大問' in subset.columns:
-                subset = subset.dropna(subset=['大問'])
-            
+            if '大問' in subset.columns: subset = subset.dropna(subset=['大問'])
             subset['点数'] = pd.to_numeric(subset['点数'], errors='coerce').fillna(0)
             subset['配点'] = pd.to_numeric(subset['配点'], errors='coerce').fillna(0)
-            subset['ファイル名'] = file.name
+            subset['ファイル名'] = str(file.name)
             
             for sub in ['数学','英語','理科','社会','国語']:
                 if sub in file.name:
@@ -116,10 +147,8 @@ def parse_csv(file):
             if '点数' in subset.columns:
                 return subset
             return None
-        else:
-            return None
-    except Exception:
         return None
+    except Exception: return None
 
 def ask_gemini_text(prompt):
     try:
@@ -131,8 +160,68 @@ def ask_gemini_vision(prompt, image_list):
         content = [prompt] + image_list
         response = model_vision.generate_content(content)
         return response.text
-    except Exception as e:
-        return f"エラー: {e}"
+    except Exception as e: return f"エラー: {e}"
+
+# 👇 固定カテゴリへの振り分けを行う関数
+def categorize_topics_with_ai(df_all):
+    unique_pairs = df_all[['教科', '内容']].drop_duplicates()
+    unknown_list = []
+    
+    for _, row in unique_pairs.iterrows():
+        subj = row['教科']
+        topic = str(row['内容']).strip()
+        if (subj, topic) not in st.session_state['category_map']:
+            unknown_list.append(f"{subj}: {topic}")
+    
+    if unknown_list:
+        with st.spinner(f"AIが {len(unknown_list)} 件の単元を標準カテゴリに整理中..."):
+            # プロンプトを作成（定義したカテゴリリストを埋め込む）
+            categories_str = json.dumps(FIXED_CATEGORIES, ensure_ascii=False, indent=2)
+            
+            prompt = f"""
+            あなたは学習塾の教務システムです。
+            入力された「教科: 単元名」を、以下の【定義済みカテゴリリスト】の中から最も適切なものに分類してください。
+
+            【定義済みカテゴリリスト】
+            {categories_str}
+
+            【分類ルール】
+            1. 必ず上記のリストにある言葉だけを使ってください。勝手に新しい言葉を作らないでください。
+            2. 「その他」に分類する教科は、リストにない教科の場合だけにしてください。リストにある教科なら、できるだけ内容に近いものを選んでください。
+            
+            【入力データ】
+            """ + "\n".join(unknown_list) + """
+
+            【出力形式】
+            以下のJSON形式のみを出力してください（Markdownタグ不要）。
+            {
+                "教科: 元の単元名": "定義済みカテゴリ名",
+                ...
+            }
+            """
+            
+            try:
+                response = ask_gemini_text(prompt)
+                json_match = re.search(r'\{.*\}', response, re.DOTALL)
+                if json_match:
+                    mapping = json.loads(json_match.group())
+                    for k, v in mapping.items():
+                        if ':' in k:
+                            s, t = k.split(':', 1)
+                            st.session_state['category_map'][(s.strip(), t.strip())] = v.strip()
+            except Exception as e:
+                st.error(f"分類エラー: {e}")
+
+    df_clean = df_all.copy()
+    if '詳細' not in df_clean.columns:
+        df_clean['詳細'] = df_clean['内容']
+    
+    def apply_mapping(row):
+        key = (row['教科'], str(row['内容']).strip())
+        return st.session_state['category_map'].get(key, row['内容'])
+
+    df_clean['内容'] = df_clean.apply(apply_mapping, axis=1)
+    return df_clean
 
 # ---------------------------------------------------------
 # 3. メイン画面
@@ -147,7 +236,6 @@ with st.form("upload_form", clear_on_submit=True):
     if submit_upload and uploaded_files:
         new_c, over_c = 0, 0
         error_files = []
-        
         for file in uploaded_files:
             df = parse_csv(file)
             if df is not None:
@@ -159,15 +247,16 @@ with st.form("upload_form", clear_on_submit=True):
         
         if new_c > 0 or over_c > 0:
             st.success(f"✅ 新規:{new_c}件 / 上書き:{over_c}件 保存完了")
-        
+            st.rerun()
         if error_files:
-            st.error(f"⚠️ 以下のファイルは読み込めませんでした: {', '.join(error_files)}")
+            st.error(f"⚠️ 読み込めなかったファイル: {', '.join(error_files)}")
 
 # ---------------------------------------------------------
 # 4. 機能タブ
 # ---------------------------------------------------------
 if st.session_state['data_store']:
-    all_df = pd.concat(st.session_state['data_store'].values(), ignore_index=True)
+    raw_df = pd.concat(st.session_state['data_store'].values(), ignore_index=True)
+    all_df = categorize_topics_with_ai(raw_df)
 else:
     all_df = pd.DataFrame()
 
@@ -179,23 +268,30 @@ with tab1:
         summary = all_df.groupby(['教科', '内容'])[['点数', '配点']].sum().reset_index()
         summary['得点率(%)'] = (summary['点数'] / summary['配点'] * 100).round(1)
         
-        st.subheader("データ分析")
+        summary_clean = pd.DataFrame(summary.to_dict('list'))
+        summary_clean.columns = [str(c) for c in summary_clean.columns]
+        
+        st.subheader("データ分析（統一カテゴリ）")
         col1, col2 = st.columns([2,1])
         with col1:
             st.write("⚠️ 優先復習単元")
-            # 👇 ここを修正しました（エラーの原因となるstyle機能を削除し、安全なcolumn_configに変更）
             st.dataframe(
-                summary.sort_values('得点率(%)').head(10),
+                summary_clean.sort_values('得点率(%)').head(10),
                 column_config={
                     "得点率(%)": st.column_config.NumberColumn(format="%.1f%%")
                 },
-                use_container_width=True
+                use_container_width=True,
+                hide_index=True
             )
         with col2:
             st.write("教科別平均")
             sub_sum = all_df.groupby('教科')[['点数', '配点']].sum().reset_index()
             sub_sum['得点率'] = (sub_sum['点数']/sub_sum['配点']*100).round(1)
-            st.dataframe(sub_sum)
+            
+            sub_sum_clean = pd.DataFrame(sub_sum.to_dict('list'))
+            sub_sum_clean.columns = [str(c) for c in sub_sum_clean.columns]
+            
+            st.dataframe(sub_sum_clean, hide_index=True)
     else:
         st.info("CSVデータをアップロードすると分析結果が表示されます。")
 
@@ -207,20 +303,29 @@ with tab2:
         with c1: sel_sub = st.selectbox("教科", summary['教科'].unique())
         with c2: sel_top = st.selectbox("単元", summary[summary['教科']==sel_sub].sort_values('得点率(%)')['内容'])
         
-        rate = summary[(summary['教科']==sel_sub)&(summary['内容']==sel_top)]['得点率(%)'].values[0]
-        st.info(f"得点率: **{rate}%**")
+        target_rows = all_df[(all_df['教科']==sel_sub) & (all_df['内容']==sel_top)]
+        rate = (target_rows['点数'].sum() / target_rows['配点'].sum() * 100).round(1)
+        
+        st.info(f"単元「{sel_top}」の得点率: **{rate}%**")
+        original_topics = target_rows['詳細'].unique().tolist() if '詳細' in target_rows.columns else []
+        original_topics_str = "、".join([str(t) for t in original_topics])
+        st.caption(f"含まれる元の単元: {original_topics_str}")
+        
         book = st.session_state['textbooks'].get(sel_sub, "参考書")
         
         if st.button("① 復習ポイントを聞く"):
             with st.spinner("AI思考中..."):
-                p = f"新潟高校志望。教科{sel_sub}、単元{sel_top}、得点率{rate}%。参考書『{book}』のどこを見るべきか、新潟高校レベルの理解の深さ、チェック項目3つを教えて。"
+                p = f"""
+                新潟高校志望。教科「{sel_sub}」、カテゴリ「{sel_top}」（詳細は{original_topics_str}など）が苦手（得点率{rate}%）。
+                参考書『{book}』のどこを見るべきか、新潟高校レベルの理解の深さ、チェック項目3つを教えて。
+                """
                 st.session_state['guide'] = ask_gemini_text(p)
         
         if 'guide' in st.session_state:
             st.markdown(st.session_state['guide'])
             if st.button("② 確認テストをする"):
                 with st.spinner("作成中..."):
-                    p2 = f"新潟高校レベル。{sel_sub}の{sel_top}の実践問題1問作成。解答解説付き。"
+                    p2 = f"新潟高校レベル。{sel_sub}の「{sel_top}」（詳細: {original_topics_str}）の実践問題1問作成。解答解説付き。"
                     st.session_state['test'] = ask_gemini_text(p2)
         
         if 'test' in st.session_state:
