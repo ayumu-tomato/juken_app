@@ -8,7 +8,7 @@ import re
 import time
 
 # ==========================================
-# 🔐 初期設定
+# 🔐 初期設定 & モデル自動検出
 # ==========================================
 st.set_page_config(page_title="新潟高校 合格ナビ", layout="wide")
 st.title("🏔️ 新潟高校 合格ストラテジー & 徹底復習")
@@ -25,22 +25,59 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # ---------------------------------------------------------
-# 🤖 AIモデル設定（Gemini 1.5 Pro 固定）
+# 🤖 最強のモデル自動検出ロジック (Ver. 3.0対応)
 # ---------------------------------------------------------
-# ユーザー様は「使い放題」とのことですので、最高精度のProを固定で使用します。
-MODEL_NAME = 'gemini-1.5-pro'
+def get_best_pro_model():
+    """利用可能なモデルの中から、Gemini 3.0を含む最新モデルを自動で探す"""
+    try:
+        # APIキーで使える全モデルを取得
+        all_models = [m.name.replace("models/", "") for m in genai.list_models()]
+        
+        # 優先順位リスト（新しい順に並べています）
+        # ここに gemini-3-pro 系を追加しました
+        priority_list = [
+            "gemini-3-pro",           # 本命
+            "gemini-3-pro-preview",   # プレビュー版
+            "gemini-3.0-pro",         # 表記揺れ対応
+            "gemini-2.5-pro",         # 2.5系
+            "gemini-2.0-pro-exp",     # 2.0系実験版
+            "gemini-1.5-pro-002",     # 1.5系最新
+            "gemini-1.5-pro-latest",
+            "gemini-1.5-pro",
+            "gemini-pro"
+        ]
+        
+        # 優先リストの中から、実際に使えるものを探す
+        for model_name in priority_list:
+            if model_name in all_models:
+                return model_name
+        
+        # リストになくても "pro" がつくモデルがあればそれを使う（数字が大きい順にソート）
+        pro_models = [m for m in all_models if "pro" in m and "vision" not in m]
+        if pro_models:
+            # 名前でソートして一番新しそうなものを返す (例: gemini-1.5-pro > gemini-1.0-pro)
+            pro_models.sort(reverse=True)
+            return pro_models[0]
+                
+        # どうしてもProが見つからない場合のみFlash
+        return "gemini-1.5-flash"
+        
+    except Exception as e:
+        # エラー時は安全策として 1.5 Pro を返す
+        return "gemini-1.5-pro"
 
+# モデルを決定
+MODEL_NAME = get_best_pro_model()
+
+# モデルのセットアップ
 try:
     model_main = genai.GenerativeModel(MODEL_NAME)
     model_vision = genai.GenerativeModel(MODEL_NAME)
-    # 接続確認
-    # model_main.generate_content("test")
+    st.sidebar.success(f"🚀 AI Model: {MODEL_NAME} (Connected)")
 except Exception as e:
-    st.error(f"❌ モデル『{MODEL_NAME}』の読み込みに失敗しました。")
-    st.info("requirements.txt に `google-generativeai>=0.8.3` が指定されているか確認してください。")
+    st.error(f"❌ モデル『{MODEL_NAME}』の起動に失敗しました。APIキーを確認してください。")
     st.stop()
 
-st.sidebar.caption(f"🚀 AI Model: {MODEL_NAME} (Active)")
 
 # ---------------------------------------------------------
 # 💾 データ管理（セッションステート）
@@ -60,10 +97,10 @@ FIXED_CATEGORIES = {
 }
 
 # ---------------------------------------------------------
-# 🛠️ 関数定義
+# 🛠️ 関数定義（リトライ機能強化版）
 # ---------------------------------------------------------
 def ask_gemini_robust(prompt, image_list=None):
-    """リトライ機能付きAI呼び出し"""
+    """Proモデル用の頑丈な呼び出し関数（自動リトライ付き）"""
     max_retries = 3
     for attempt in range(max_retries):
         try:
@@ -74,10 +111,11 @@ def ask_gemini_robust(prompt, image_list=None):
             return response.text
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e):
-                time.sleep((attempt + 1) * 2)
+                st.toast(f"⏳ 混雑中...数秒待機して再試行します ({attempt+1}/3)")
+                time.sleep((attempt + 1) * 3)
             else:
                 return f"エラー: {e}"
-    return "❌ 混雑のため応答できませんでした。"
+    return "❌ 混雑のため応答できませんでした。時間を置いて再度試してください。"
 
 def parse_csv(file):
     """CSV読み込み・クリーニング"""
@@ -102,6 +140,7 @@ def parse_csv(file):
                     break
             
             subset = df.iloc[idx:, col_idx:].reset_index(drop=True).T
+            # 列名を文字列化してエラー防止
             subset.columns = [str(val).strip() for val in subset.iloc[0]]
             subset = subset[1:]
             
@@ -143,7 +182,7 @@ def process_and_categorize():
     # 3. AIに分類させる（未知がある場合のみ）
     if unknown_list:
         status_text = st.empty()
-        status_text.info(f"🤖 AIが {len(unknown_list)} 件の新しい単元を分析・整理しています...（Gemini 1.5 Pro）")
+        status_text.info(f"🤖 AI({MODEL_NAME})が {len(unknown_list)} 件の新しい単元を分析・整理しています...")
         
         categories_str = json.dumps(FIXED_CATEGORIES, ensure_ascii=False, indent=2)
         prompt = f"""
@@ -230,7 +269,7 @@ with col_btn:
                     new_count += 1
             
             if new_count > 0:
-                # 2. 整理処理（ここでGemini Proが動く）
+                # 2. 整理処理（ここでGemini 3.0 Pro等が動く）
                 process_and_categorize()
                 st.success(f"✅ {new_count}件のファイルを読み込み、単元を整理しました！")
             else:
@@ -297,7 +336,7 @@ if not st.session_state['clean_df'].empty:
         book = st.session_state['textbooks'].get(sel_sub, "参考書")
         
         if st.button("① 復習ポイントを聞く"):
-            with st.spinner("Gemini 1.5 Pro が思考中..."):
+            with st.spinner(f"AI({MODEL_NAME})が思考中..."):
                 p = f"""
                 新潟高校志望の生徒への指導。
                 教科: {sel_sub}
@@ -339,7 +378,7 @@ if not st.session_state['clean_df'].empty:
             img_ans = st.file_uploader("③ 模範解答画像", type=['png', 'jpg', 'jpeg'])
         
         if img_prob and img_user and img_ans:
-            if st.button("🚀 採点実行 (Gemini Pro)"):
+            if st.button(f"🚀 採点実行 ({MODEL_NAME})"):
                 with st.spinner("画像を分析中..."):
                     images = [PIL.Image.open(img_prob), PIL.Image.open(img_user), PIL.Image.open(img_ans)]
                     prompt_v = "新潟高校志望。3枚の画像（問題、生徒解答、模範解答）から、厳密な採点、添削、弱点分析、類題の提示を行ってください。"
