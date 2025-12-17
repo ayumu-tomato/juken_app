@@ -16,7 +16,7 @@ import base64
 st.set_page_config(page_title="新潟高校 合格ナビ", layout="wide", page_icon="🏔️")
 
 # --------------------------------------------------------------------------------
-# 🎨 UIデザイン & CSS
+# 🎨 UIデザイン & CSS (QB風・スマホ最適化・固定カウントダウン)
 # --------------------------------------------------------------------------------
 exam_date = datetime.date(2026, 3, 4) 
 today = datetime.date.today()
@@ -95,6 +95,16 @@ st.markdown(f"""
         box-shadow: 0 -2px 5px rgba(0,0,0,0.02);
     }}
     .stTabs [aria-selected="true"] {{ background-color: #007bff !important; color: white !important; }}
+    
+    /* 反省コメントのスタイル */
+    .reflection-box {{
+        background-color: #fff3cd;
+        border-left: 5px solid #ffc107;
+        padding: 10px;
+        border-radius: 5px;
+        margin-bottom: 15px;
+        font-size: 0.9em;
+    }}
 </style>
 
 <div class="fixed-countdown">
@@ -163,7 +173,7 @@ except Exception as e:
     st.stop()
 
 # ---------------------------------------------------------
-# 💾 データ管理 (保存ロジック修正版)
+# 💾 データ管理
 # ---------------------------------------------------------
 if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
 if 'clean_df' not in st.session_state: st.session_state['clean_df'] = pd.DataFrame()
@@ -171,19 +181,16 @@ if 'category_map' not in st.session_state: st.session_state['category_map'] = {}
 if 'textbooks' not in st.session_state: st.session_state['textbooks'] = {}
 
 def compress_data_to_code(data_dict):
-    """データを圧縮して文字列化する（エラーハンドリング強化）"""
     try:
-        # default=str を追加して、日付データやNumpy型があっても強制的に文字列化する
         json_str = json.dumps(data_dict, ensure_ascii=False, default=str)
         compressed = gzip.compress(json_str.encode('utf-8'))
         b64_str = base64.b64encode(compressed).decode('utf-8')
         return b64_str
     except Exception as e:
-        st.error(f"⚠️ データ保存コード生成中にエラーが発生しました: {e}")
+        st.error(f"⚠️ データ保存処理中にエラーが発生しました: {e}")
         return None
 
 def decompress_code_to_data(b64_str):
-    """文字列をデータに戻す"""
     try:
         compressed = base64.b64decode(b64_str)
         json_str = gzip.decompress(compressed).decode('utf-8')
@@ -262,10 +269,17 @@ def parse_csv(file):
             subset = subset[1:]
             
             if '大問' in subset.columns: subset = subset.dropna(subset=['大問'])
+            
+            # 数値データの変換
             subset['点数'] = pd.to_numeric(subset['点数'], errors='coerce').fillna(0)
             subset['配点'] = pd.to_numeric(subset['配点'], errors='coerce').fillna(0)
+            
             subset['ファイル名'] = str(file.name)
             subset['教科'] = detect_subject(file.name)
+            
+            # 反省カラムがあるかチェックし、文字列として確保
+            if '反省' in subset.columns:
+                subset['反省'] = subset['反省'].fillna("").astype(str)
             
             if '点数' in subset.columns: return subset
     except: pass
@@ -281,10 +295,11 @@ def process_and_categorize():
     with st.status(f"🚀 データを解析中... (Engine: {model_label})", expanded=True) as status:
         st.write("📂 データを結合中...")
         try:
+            # 共通するカラムのみを結合しつつ、反省カラムも保持するようにする
+            # concatはカラムが不揃いでも結合してくれる（NaNになる）
             raw_df = pd.concat(st.session_state['data_store'].values(), ignore_index=True)
         except Exception as e:
             st.error(f"データ結合エラー: {e}")
-            st.warning("一部のファイルの形式が不正な可能性があります。「全データを削除」してやり直してください。")
             status.update(label="⚠️ エラー発生", state="error")
             return
 
@@ -329,6 +344,11 @@ def process_and_categorize():
         st.write("💾 保存中...")
         df_clean = raw_df.copy()
         if '詳細' not in df_clean.columns: df_clean['詳細'] = df_clean['内容']
+        
+        # 反省カラムがない場合の保険
+        if '反省' not in df_clean.columns:
+            df_clean['反省'] = ""
+
         def apply_mapping(row):
             key = (row['教科'], str(row['内容']).strip())
             mapped = st.session_state['category_map'].get(key, row['内容'])
@@ -344,18 +364,18 @@ def get_status_emoji(rate):
     else: return "🟢"
 
 # ---------------------------------------------------------
-# 🖥️ サイドバー設定 (修正: 安全な保存・復元)
+# 🖥️ サイドバー設定
 # ---------------------------------------------------------
 with st.sidebar:
-    st.subheader("📲 簡単データ移行")
-    st.caption("別のデバイスに移る時は「セーブコード」を使うと便利です。")
+    st.subheader("📲 データ移行・保存")
+    st.caption("データ量が多い場合は「ファイル」を使用してください。")
     
-    sync_tab1, sync_tab2 = st.tabs(["📤 保存(コピー)", "📥 復元(貼付)"])
+    sync_tab1, sync_tab2 = st.tabs(["📤 書き出し", "📥 読み込み"])
     
     with sync_tab1:
         if st.session_state['data_store'] or st.session_state['textbooks']:
             
-            # --- 【修正】Category Mapのキー(タプル)を文字列に安全変換 ---
+            # 1. データを安全な形式に変換
             safe_category_map = {}
             for k, v in st.session_state['category_map'].items():
                 try:
@@ -365,13 +385,11 @@ with st.sidebar:
                         safe_category_map[str(k)] = v
                 except: continue
 
-            # --- 【修正】DataFrameをJSON化 (日付等に対応) ---
             safe_data_store = {}
             for name, df in st.session_state['data_store'].items():
                 try:
                     safe_data_store[name] = df.to_json(orient='split', force_ascii=False, date_format='iso')
-                except:
-                    pass
+                except: pass
 
             backup_data = {
                 'textbooks': st.session_state['textbooks'],
@@ -379,33 +397,51 @@ with st.sidebar:
                 'category_map': safe_category_map
             }
             
+            # 2. 圧縮文字列の生成
             save_code = compress_data_to_code(backup_data)
             
             if save_code:
-                st.info("👇 このコードをコピーして、LINEやメモ帳でスマホに送ってください。")
-                st.code(save_code, language="text")
+                st.download_button(
+                    label="💾 バックアップファイルを保存",
+                    data=save_code,
+                    file_name=f"niigata_backup_{datetime.date.today()}.txt",
+                    mime="text/plain",
+                    type="primary"
+                )
+                
+                st.markdown("---")
+                
+                with st.expander("テキストコードを表示 (少量用)"):
+                    st.info("データが多いとコピーしきれない場合があります。")
+                    st.code(save_code, language="text")
             else:
-                st.warning("保存コードの生成に失敗しました。（エラー詳細は画面上部）")
+                st.error("データの圧縮に失敗しました。")
         else:
-            st.caption("データがありません")
+            st.caption("保存するデータがありません")
 
     with sync_tab2:
-        input_code = st.text_area("ここにセーブコードを貼り付け:", height=100)
+        st.write("保存したファイルをアップロード、またはコードを貼り付けます。")
+        uploaded_backup = st.file_uploader("📂 ファイルをアップロード", type=['txt'])
+        input_code = st.text_area("またはコードを貼り付け:", height=100)
+        
         if st.button("復元を実行"):
-            if input_code:
-                restored_data = decompress_code_to_data(input_code.strip())
+            target_code = None
+            if uploaded_backup is not None:
+                target_code = uploaded_backup.read().decode("utf-8")
+            elif input_code:
+                target_code = input_code.strip()
+            
+            if target_code:
+                restored_data = decompress_code_to_data(target_code)
                 if restored_data:
                     try:
-                        # 教材データの復元
                         if 'textbooks' in restored_data: st.session_state['textbooks'] = restored_data['textbooks']
                         
-                        # 成績データの復元
                         if 'data_store' in restored_data:
                             st.session_state['data_store'] = {}
                             for name, df_json in restored_data['data_store'].items():
                                 st.session_state['data_store'][name] = pd.read_json(df_json, orient='split')
                         
-                        # カテゴリマップの復元（文字列 "数:関" → タプル ("数","関") に戻す）
                         if 'category_map' in restored_data:
                             st.session_state['category_map'] = {}
                             for k, v in restored_data['category_map'].items():
@@ -413,7 +449,6 @@ with st.sidebar:
                                     s, t = k.split(':', 1)
                                     st.session_state['category_map'][(s, t)] = v
                                 else:
-                                    # 万が一フォーマットが違う場合
                                     st.session_state['category_map'][(k, k)] = v
                         
                         st.session_state['clean_df'] = pd.DataFrame() 
@@ -423,7 +458,9 @@ with st.sidebar:
                     except Exception as e:
                         st.error(f"復元処理中にエラー: {e}")
                 else:
-                    st.error("コードが間違っているか、壊れています。")
+                    st.error("ファイルが壊れているか、コードが間違っています。")
+            else:
+                st.warning("ファイルを選択するか、コードを貼り付けてください。")
 
     st.markdown("---")
     st.subheader("📚 登録済み参考書")
@@ -497,7 +534,8 @@ if not st.session_state['clean_df'].empty:
     df_show = st.session_state['clean_df']
     st.markdown("---")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 全体分析", "📖 復習＆テスト", "📅 合格計画", "📷 画像採点"])
+    # 計画タブを削除
+    tab1, tab2, tab3 = st.tabs(["📊 全体分析", "📖 復習＆テスト", "📷 画像採点"])
 
     with tab1:
         # データ集計
@@ -568,7 +606,7 @@ if not st.session_state['clean_df'].empty:
                 else: st.caption("データなし")
 
     with tab2:
-        st.subheader("AI家庭教師による指導")
+        st.subheader("AI家庭教師による指導（反省活用版）")
         
         # データ準備
         summary_t2 = df_show.groupby(['教科', '内容'])[['点数', '配点']].sum().reset_index()
@@ -595,14 +633,45 @@ if not st.session_state['clean_df'].empty:
         original_topics = target_rows['詳細'].unique().tolist()
         original_topics_str = "、".join([str(t) for t in original_topics])
         
+        # 反省テキストの抽出
+        reflections = []
+        if '反省' in target_rows.columns:
+            raw_reflections = target_rows['反省'].dropna().unique().tolist()
+            # 空文字やnanを除外
+            reflections = [str(r) for r in raw_reflections if str(r).strip() != "" and str(r).lower() != "nan"]
+        
         st.info(f"選択単元: **{sel_top}** (得点率: {rate}%)")
         st.caption(f"詳細: {original_topics_str}")
+        
+        # 反省の表示
+        if reflections:
+            st.markdown("📝 **あなたの反省メモ**")
+            for r in reflections:
+                st.markdown(f'<div class="reflection-box">💡 {r}</div>', unsafe_allow_html=True)
+            reflection_text = "、".join(reflections)
+        else:
+            reflection_text = "特になし"
+            st.caption("※この単元に関する反省メモはありません。")
+
         book = st.session_state['textbooks'].get(sel_sub, "参考書")
         
         if st.button("① 復習ポイントを聞く"):
             with st.status(f"🤖 AI({MODEL_NAME_PRO})が思考中...", expanded=True) as status:
-                st.write("1. 分析中...")
-                p = f"新潟高校志望。教科: {sel_sub}, 苦手カテゴリ: {sel_top}（詳細: {original_topics_str}）, 得点率: {rate}%, 参考書: {book}。復習ポイントとチェック項目3つを教えて。"
+                st.write("1. 弱点と反省を分析中...")
+                # 反省を含めたプロンプトを作成
+                p = f"""
+                新潟高校志望の受験生です。
+                教科: {sel_sub}
+                苦手カテゴリ: {sel_top}
+                詳細単元: {original_topics_str}
+                得点率: {rate}%
+                使用参考書: {book}
+                
+                【本人の反省・ミスの原因】
+                {reflection_text}
+                
+                上記を踏まえ、一般論ではなく私のミスの傾向に合わせた「具体的な復習ポイント」と「確認すべきチェック項目3つ」を教えてください。
+                """
                 res = ask_gemini_robust(p, use_flash=False)
                 st.session_state['guide'] = res
                 status.update(label="✅ 完了！", state="complete", expanded=False)
@@ -611,7 +680,15 @@ if not st.session_state['clean_df'].empty:
             st.markdown(st.session_state['guide'])
             if st.button("② 確認テストを作成"):
                 with st.status("📝 問題作成中...", expanded=True) as status:
-                    p2 = f"新潟高校入試レベル。{sel_sub}の「{sel_top}」（詳細: {original_topics_str}）の実践問題1問。解答解説付き。"
+                    p2 = f"""
+                    新潟高校入試レベルの問題作成依頼。
+                    単元: {sel_sub}の「{sel_top}」（詳細: {original_topics_str}）
+                    
+                    【考慮すべき本人の弱点】
+                    {reflection_text}
+                    
+                    上記弱点を克服するための、実践問題1問を作成してください。解答と解説も付けてください。
+                    """
                     res = ask_gemini_robust(p2, use_flash=False)
                     st.session_state['test'] = res
                     status.update(label="✅ 完了！", state="complete", expanded=False)
@@ -621,28 +698,6 @@ if not st.session_state['clean_df'].empty:
             st.markdown(st.session_state['test'])
 
     with tab3:
-        if st.button("合格スケジュール作成"):
-            with st.status("📅 スケジュールを立案中...", expanded=True) as status:
-                st.write("1. 弱点を抽出中...")
-                summary = df_show.groupby(['教科', '内容'])[['点数', '配点']].sum().reset_index()
-                summary['得点率'] = (summary['点数'] / summary['配点'] * 100)
-                weak_points = summary.sort_values('得点率').head(5)
-                weak_str = ""
-                for _, row in weak_points.iterrows():
-                    weak_str += f"- {row['教科']}: {row['内容']} (得点率{row['得点率']:.1f}%)\n"
-                
-                st.write("2. カリキュラム構築中...")
-                prompt = f"""
-                今日({datetime.date.today()})から入試({datetime.date(2026, 3, 4)})までの新潟高校合格スケジュール。
-                【特に苦手な分野】
-                {weak_str}
-                具体的な対策を含めて作成してください。
-                """
-                res = ask_gemini_robust(prompt, use_flash=False)
-                st.markdown(res)
-                status.update(label="✅ 完成！", state="complete", expanded=False)
-
-    with tab4:
         st.subheader("📷 画像採点＆指導")
         col_img1, col_img2, col_img3 = st.columns(3)
         with col_img1: img_prob = st.file_uploader("① 問題画像", type=['png', 'jpg', 'jpeg'])
