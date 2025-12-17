@@ -20,13 +20,38 @@ if not api_key:
 else:
     genai.configure(api_key=api_key)
     
-    # 👇 【Pro限定】ユーザー指定により Gemini 1.5 Pro のみを指定
-    # requirements.txt で google-generativeai>=0.8.3 を指定しないとエラーになります
+    # バージョン表示（サイドバー）
+    st.sidebar.caption(f"Lib Version: {genai.__version__}")
+
+    # Gemini 1.5 Pro の指定
+    # エラーが出た場合、何が使えるのかを表示する診断機能付き
+    target_model_name = 'gemini-1.5-pro'
+    
     try:
-        model_text = genai.GenerativeModel('gemini-1.5-pro')
-        model_vision = genai.GenerativeModel('gemini-1.5-pro')
+        model_text = genai.GenerativeModel(target_model_name)
+        model_vision = genai.GenerativeModel(target_model_name)
+        # 試しに空打ちして接続確認
+        # model_text.generate_content("test") 
     except Exception as e:
-        st.error(f"❌ モデルの読み込みに失敗しました。requirements.txt のバージョンを確認してください。\nエラー詳細: {e}")
+        st.error(f"❌ モデル『{target_model_name}』の読み込みに失敗しました。")
+        st.error(f"エラー詳細: {e}")
+        
+        # 対策情報の表示
+        st.warning("【考えられる原因】")
+        st.markdown("1. **requirements.txt が古い**: GitHubの `requirements.txt` に `google-generativeai>=0.8.3` と書いてあるか確認してください。")
+        st.markdown("2. **キャッシュが残っている**: Streamlitの画面右下「Manage app」から「Clear cache」と「Reboot app」を試してください。")
+        
+        # 利用可能なモデル一覧を表示（デバッグ用）
+        st.markdown("---")
+        st.markdown("##### 📋 現在この環境で利用可能なモデル一覧:")
+        try:
+            available_models = []
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    available_models.append(m.name)
+            st.code("\n".join(available_models))
+        except:
+            st.write("モデル一覧の取得にも失敗しました。APIキーが正しいか確認してください。")
         st.stop()
 
 # ---------------------------------------------------------
@@ -37,9 +62,6 @@ EXAM_DATE = datetime.date(2026, 3, 4)
 
 st.set_page_config(page_title="新潟高校 合格ナビ", layout="wide")
 st.title("🏔️ 新潟高校 合格ストラテジー & 徹底復習")
-
-# バージョン確認用（サイドバーの最下部に小さく表示）
-st.sidebar.caption(f"GenAI Lib Version: {genai.__version__}")
 
 if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
 if 'textbooks' not in st.session_state: st.session_state['textbooks'] = {}
