@@ -115,7 +115,7 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # ---------------------------------------------------------
-# 🤖 モデル自動検出 (変更なし)
+# 🤖 モデル自動検出
 # ---------------------------------------------------------
 def get_available_models():
     try:
@@ -163,7 +163,7 @@ except Exception as e:
     st.stop()
 
 # ---------------------------------------------------------
-# 💾 データ管理 (変更なし)
+# 💾 データ管理
 # ---------------------------------------------------------
 if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
 if 'clean_df' not in st.session_state: st.session_state['clean_df'] = pd.DataFrame()
@@ -196,7 +196,7 @@ FIXED_CATEGORIES = {
 }
 
 # ---------------------------------------------------------
-# 🛠️ 関数定義 (変更なし)
+# 🛠️ 関数定義 (修正: 重複カラム対策)
 # ---------------------------------------------------------
 def ask_gemini_robust(prompt, image_list=None, use_flash=False):
     max_retries = 3
@@ -241,7 +241,21 @@ def parse_csv(file):
                     break
             
             subset = df.iloc[idx:, col_idx:].reset_index(drop=True).T
-            subset.columns = [str(val).strip() for val in subset.iloc[0]]
+            
+            # --- 修正箇所: カラム名の重複除去処理 ---
+            raw_cols = [str(val).strip() for val in subset.iloc[0]]
+            new_cols = []
+            seen = {}
+            for c in raw_cols:
+                if c in seen:
+                    seen[c] += 1
+                    new_cols.append(f"{c}_{seen[c]}")
+                else:
+                    seen[c] = 0
+                    new_cols.append(c)
+            subset.columns = new_cols
+            # ---------------------------------------
+            
             subset = subset[1:]
             
             if '大問' in subset.columns: subset = subset.dropna(subset=['大問'])
@@ -263,7 +277,14 @@ def process_and_categorize():
     
     with st.status(f"🚀 データを解析中... (Engine: {model_label})", expanded=True) as status:
         st.write("📂 データを結合中...")
-        raw_df = pd.concat(st.session_state['data_store'].values(), ignore_index=True)
+        try:
+            raw_df = pd.concat(st.session_state['data_store'].values(), ignore_index=True)
+        except Exception as e:
+            st.error(f"データ結合エラー: {e}")
+            st.warning("一部のファイルの形式が不正な可能性があります。「全データを削除」してやり直してください。")
+            status.update(label="⚠️ エラー発生", state="error")
+            return
+
         time.sleep(0.1)
         
         st.write("🔍 未知の単元を検索中...")
@@ -315,7 +336,7 @@ def process_and_categorize():
         status.update(label="✅ 完了！", state="complete", expanded=False)
 
 # ---------------------------------------------------------
-# 🎨 カラー判定ヘルパー関数 (新規追加)
+# 🎨 カラー判定ヘルパー関数
 # ---------------------------------------------------------
 def get_status_emoji(rate):
     if rate <= 50: return "🔴"
