@@ -72,7 +72,7 @@ else:
 # 2. 関数定義
 # ---------------------------------------------------------
 def parse_csv(file):
-    """CSVを読み込む関数（列ズレ・文字コード自動対応版）"""
+    """CSVを読み込む関数"""
     try:
         file.seek(0)
         try:
@@ -81,13 +81,10 @@ def parse_csv(file):
             file.seek(0)
             df = pd.read_csv(file, header=None, encoding='cp932')
         
-        # '大問' や '内容' が含まれる行を探す
         header_row_mask = df.apply(lambda r: r.astype(str).str.contains('大問|内容').any(), axis=1)
         
         if len(df[header_row_mask]) > 0:
-            idx = df[header_row_mask].index[0] # ヘッダーがある行番号
-            
-            # その行の中で、'大問'などが実際に始まる列番号を探す
+            idx = df[header_row_mask].index[0]
             target_row = df.iloc[idx]
             col_idx = 0
             for c in df.columns:
@@ -96,18 +93,15 @@ def parse_csv(file):
                     col_idx = c
                     break
             
-            # ヘッダー行以降、かつ有効な列以降を切り出す
             subset = df.iloc[idx:, col_idx:].reset_index(drop=True).T
             
-            # 1行目をヘッダーにする
-            subset.columns = subset.iloc[0]
+            # カラム名を文字列型に強制変換（これがエラー対策の肝です）
+            subset.columns = subset.iloc[0].astype(str)
             subset = subset[1:]
             
-            # 不要な行削除
             if '大問' in subset.columns:
                 subset = subset.dropna(subset=['大問'])
             
-            # 数値変換（エラーは0に）
             subset['点数'] = pd.to_numeric(subset['点数'], errors='coerce').fillna(0)
             subset['配点'] = pd.to_numeric(subset['配点'], errors='coerce').fillna(0)
             subset['ファイル名'] = file.name
@@ -119,7 +113,6 @@ def parse_csv(file):
             else:
                 subset['教科'] = 'その他'
             
-            # 必須項目があるか最終チェック
             if '点数' in subset.columns:
                 return subset
             return None
@@ -148,7 +141,7 @@ st.markdown("##### 📂 学習データのアップロード（CSV）")
 st.caption("Excel等で作成したCSVも読み込めます。")
 
 with st.form("upload_form", clear_on_submit=True):
-    uploaded_files = st.file_uploader("CSVファイルを選択（複数可）", accept_multiple_files=True, type=['csv'], label_visibility="collapsed")
+    uploaded_files = st.file_uploader("CSVファイルを選択", accept_multiple_files=True, type=['csv'], label_visibility="collapsed")
     submit_upload = st.form_submit_button("📥 読み込んで保存")
     
     if submit_upload and uploaded_files:
@@ -168,7 +161,7 @@ with st.form("upload_form", clear_on_submit=True):
             st.success(f"✅ 新規:{new_c}件 / 上書き:{over_c}件 保存完了")
         
         if error_files:
-            st.error(f"⚠️ 以下のファイルは形式が読み取れませんでした:\n{', '.join(error_files)}")
+            st.error(f"⚠️ 以下のファイルは読み込めませんでした: {', '.join(error_files)}")
 
 # ---------------------------------------------------------
 # 4. 機能タブ
@@ -185,11 +178,19 @@ with tab1:
     if not all_df.empty:
         summary = all_df.groupby(['教科', '内容'])[['点数', '配点']].sum().reset_index()
         summary['得点率(%)'] = (summary['点数'] / summary['配点'] * 100).round(1)
+        
         st.subheader("データ分析")
         col1, col2 = st.columns([2,1])
         with col1:
             st.write("⚠️ 優先復習単元")
-            st.dataframe(summary.sort_values('得点率(%)').head(10).style.format({'得点率(%)': '{:.1f}%'}).background_gradient(subset=['得点率(%)'], cmap='RdYlGn'))
+            # 👇 ここを修正しました（エラーの原因となるstyle機能を削除し、安全なcolumn_configに変更）
+            st.dataframe(
+                summary.sort_values('得点率(%)').head(10),
+                column_config={
+                    "得点率(%)": st.column_config.NumberColumn(format="%.1f%%")
+                },
+                use_container_width=True
+            )
         with col2:
             st.write("教科別平均")
             sub_sum = all_df.groupby('教科')[['点数', '配点']].sum().reset_index()
@@ -237,7 +238,7 @@ with tab3:
 # --- Tab 4: 画像採点 ---
 with tab4:
     st.subheader("📷 カメラでパシャっと採点＆指導")
-    st.info("「①問題」「②自分の解答」「③模範解答」を順番に撮影（またはアップロード）してください。AI先生が採点します。")
+    st.info("「①問題」「②自分の解答」「③模範解答」を順番に撮影（またはアップロード）してください。")
 
     col_img1, col_img2, col_img3 = st.columns(3)
     with col_img1:
