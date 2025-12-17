@@ -16,31 +16,24 @@ import base64
 st.set_page_config(page_title="新潟高校 合格ナビ", layout="wide", page_icon="🏔️")
 
 # --------------------------------------------------------------------------------
-# 🎨 UIデザイン変更 & 固定カウントダウン (ここだけ追加・変更しました)
+# 🎨 UIデザイン & CSS (QB風・スマホ最適化・固定カウントダウン)
 # --------------------------------------------------------------------------------
-# 入試日設定 (新潟県公立高校入試 2026年想定)
 exam_date = datetime.date(2026, 3, 4) 
 today = datetime.date.today()
 days_left = (exam_date - today).days
 if days_left < 0: days_left = 0
 
-# カスタムCSSの注入
 st.markdown(f"""
 <style>
-    /* 1. フォントと全体設定 */
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&display=swap');
     
     html, body, [class*="css"] {{
         font-family: 'Noto Sans JP', sans-serif;
         color: #333;
     }}
-    
-    /* 背景色を薄いグレーにして、清潔感を出す */
-    .stApp {{
-        background-color: #f4f7f6;
-    }}
+    .stApp {{ background-color: #f4f7f6; }}
 
-    /* 2. 右上の固定カウントダウン (スマホ対応) */
+    /* 固定カウントダウン */
     .fixed-countdown {{
         position: fixed;
         top: 0;
@@ -54,29 +47,14 @@ st.markdown(f"""
         border-left: 5px solid #007bff;
         line-height: 1.2;
     }}
-    .count-label {{
-        font-size: 10px;
-        color: #666;
-        display: block;
-        font-weight: bold;
-    }}
-    .count-number {{
-        font-size: 20px;
-        font-weight: 800;
-        color: #d9534f;
-    }}
-
-    /* スマホ画面での調整 (ヘッダーと被らないように) */
+    .count-label {{ font-size: 10px; color: #666; display: block; font-weight: bold; }}
+    .count-number {{ font-size: 20px; font-weight: 800; color: #d9534f; }}
     @media (max-width: 640px) {{
-        .fixed-countdown {{
-            top: 40px; 
-            padding: 5px 10px;
-        }}
+        .fixed-countdown {{ top: 40px; padding: 5px 10px; }}
         .count-number {{ font-size: 16px; }}
     }}
 
-    /* 3. QB風カードデザイン */
-    /* Streamlitの各ブロックを白背景のカードにする */
+    /* QB風カード */
     div[data-testid="stVerticalBlock"] > div:has(div.stDataFrame), 
     div[data-testid="stVerticalBlock"] > div:has(div.stMarkdown) {{
         background-color: white;
@@ -86,7 +64,6 @@ st.markdown(f"""
         margin-bottom: 10px;
     }}
 
-    /* タイトル周りの調整 */
     h1 {{
         color: #007bff;
         font-size: 1.8rem !important;
@@ -98,41 +75,26 @@ st.markdown(f"""
         margin-bottom: 20px !important;
     }}
     
-    /* 4. ボタンのスマホ最適化 (押しやすく) */
     .stButton > button {{
         width: 100%;
-        border-radius: 30px; /* 丸みを帯びた形状 */
+        border-radius: 30px;
         font-weight: bold;
         padding: 0.6rem 1rem;
         border: none;
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         transition: transform 0.1s;
     }}
-    .stButton > button:active {{
-        transform: scale(0.98);
-    }}
-    /* プライマリボタンの色調整 */
-    button[kind="primary"] {{
-        background-color: #007bff !important;
-        color: white !important;
-    }}
+    .stButton > button:active {{ transform: scale(0.98); }}
+    button[kind="primary"] {{ background-color: #007bff !important; color: white !important; }}
 
-    /* タブの見た目 */
-    .stTabs [data-baseweb="tab-list"] {{
-        gap: 10px;
-        background-color: transparent;
-    }}
+    .stTabs [data-baseweb="tab-list"] {{ gap: 10px; background-color: transparent; }}
     .stTabs [data-baseweb="tab"] {{
         background-color: white;
         border-radius: 8px 8px 0 0;
         padding: 10px 20px;
         box-shadow: 0 -2px 5px rgba(0,0,0,0.02);
     }}
-    .stTabs [aria-selected="true"] {{
-        background-color: #007bff !important;
-        color: white !important;
-    }}
-
+    .stTabs [aria-selected="true"] {{ background-color: #007bff !important; color: white !important; }}
 </style>
 
 <div class="fixed-countdown">
@@ -140,12 +102,6 @@ st.markdown(f"""
     <span class="count-number">あと {days_left} 日</span>
 </div>
 """, unsafe_allow_html=True)
-
-# --------------------------------------------------------------------------------
-# 以下、元のコード (機能ロジックは一切変更していません)
-# --------------------------------------------------------------------------------
-
-st.title("🏔️ 新潟高校 合格ストラテジー & 徹底復習")
 
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
@@ -159,7 +115,7 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # ---------------------------------------------------------
-# 🤖 モデル自動検出ロジック
+# 🤖 モデル自動検出 (変更なし)
 # ---------------------------------------------------------
 def get_available_models():
     try:
@@ -206,16 +162,14 @@ except Exception as e:
     st.error(f"❌ モデル起動エラー: {e}")
     st.stop()
 
-
 # ---------------------------------------------------------
-# 💾 データ管理 & 圧縮・復元ロジック
+# 💾 データ管理 (変更なし)
 # ---------------------------------------------------------
 if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
 if 'clean_df' not in st.session_state: st.session_state['clean_df'] = pd.DataFrame()
 if 'category_map' not in st.session_state: st.session_state['category_map'] = {}
 if 'textbooks' not in st.session_state: st.session_state['textbooks'] = {}
 
-# データを圧縮して文字列(Base64)にする関数
 def compress_data_to_code(data_dict):
     try:
         json_str = json.dumps(data_dict, ensure_ascii=False)
@@ -225,7 +179,6 @@ def compress_data_to_code(data_dict):
     except Exception as e:
         return None
 
-# 文字列(Base64)からデータを復元する関数
 def decompress_code_to_data(b64_str):
     try:
         compressed = base64.b64decode(b64_str)
@@ -243,7 +196,7 @@ FIXED_CATEGORIES = {
 }
 
 # ---------------------------------------------------------
-# 🛠️ 関数定義
+# 🛠️ 関数定義 (変更なし)
 # ---------------------------------------------------------
 def ask_gemini_robust(prompt, image_list=None, use_flash=False):
     max_retries = 3
@@ -306,7 +259,7 @@ def process_and_categorize():
         st.session_state['clean_df'] = pd.DataFrame()
         return
 
-    model_label = MODEL_NAME_PRO # 分類もProで精度重視
+    model_label = MODEL_NAME_PRO 
     
     with st.status(f"🚀 データを解析中... (Engine: {model_label})", expanded=True) as status:
         st.write("📂 データを結合中...")
@@ -331,13 +284,10 @@ def process_and_categorize():
             prompt = f"""
             入試データ分析の専門家として振る舞ってください。
             入力された「教科: 元の単元名」を分析し、以下の【定義済みマスタ】の中で最も適切なカテゴリに分類してください。
-            
             【定義済みマスタ】
             {categories_str}
-            
             【入力データ】
             """ + "\n".join(unknown_list) + """
-            
             【出力形式】
             JSON形式の辞書 `{ "教科: 元の単元名": "定義済みカテゴリ名", ... }` のみを出力してください。
             """
@@ -351,7 +301,6 @@ def process_and_categorize():
                             s, t = k.split(':', 1)
                             st.session_state['category_map'][(s.strip(), t.strip())] = v.strip()
             except: st.warning("一部の分類に失敗")
-        else: st.write("✨ 分類済み")
 
         st.write("💾 保存中...")
         df_clean = raw_df.copy()
@@ -366,6 +315,14 @@ def process_and_categorize():
         status.update(label="✅ 完了！", state="complete", expanded=False)
 
 # ---------------------------------------------------------
+# 🎨 カラー判定ヘルパー関数 (新規追加)
+# ---------------------------------------------------------
+def get_status_emoji(rate):
+    if rate <= 50: return "🔴"
+    elif rate <= 70: return "🟡"
+    else: return "🟢"
+
+# ---------------------------------------------------------
 # 🖥️ サイドバー設定 (簡単同期機能)
 # ---------------------------------------------------------
 with st.sidebar:
@@ -376,11 +333,10 @@ with st.sidebar:
     
     with sync_tab1:
         if st.session_state['data_store'] or st.session_state['textbooks']:
-            # データをまとめて圧縮
             backup_data = {
                 'textbooks': st.session_state['textbooks'],
                 'data_store': {name: df.to_json(orient='split') for name, df in st.session_state['data_store'].items()},
-                'category_map': {f"{k[0]}:{k[1]}": v for k, v in st.session_state['category_map'].items()} # マップも保存
+                'category_map': {f"{k[0]}:{k[1]}": v for k, v in st.session_state['category_map'].items()}
             }
             save_code = compress_data_to_code(backup_data)
             
@@ -411,7 +367,7 @@ with st.sidebar:
                                     s, t = k.split(':', 1)
                                     st.session_state['category_map'][(s, t)] = v
                         
-                        st.session_state['clean_df'] = pd.DataFrame() # リセットして再計算待機
+                        st.session_state['clean_df'] = pd.DataFrame() 
                         st.success("✅ 復元完了！画面を更新します。")
                         time.sleep(1)
                         st.rerun()
@@ -495,22 +451,50 @@ if not st.session_state['clean_df'].empty:
     tab1, tab2, tab3, tab4 = st.tabs(["📊 全体分析", "📖 復習＆テスト", "📅 合格計画", "📷 画像採点"])
 
     with tab1:
+        # データ集計
         summary = df_show.groupby(['教科', '内容'])[['点数', '配点']].sum().reset_index()
-        summary['得点率(%)'] = (summary['点数'] / summary['配点'] * 100).round(1)
-        summary_clean = pd.DataFrame(summary.to_dict('list'))
-        summary_clean.columns = [str(c) for c in summary_clean.columns]
+        summary['得点率(%)'] = (summary['点数'] / summary['配点'] * 100).fillna(0).round(1)
+        
+        # 判定カラムの追加 (🔴/🟡/🟢)
+        summary['判定'] = summary['得点率(%)'].apply(get_status_emoji)
+        
+        # 表示用データの整理
+        summary_clean = summary[['教科', '内容', '判定', '得点率(%)']].copy()
 
         col1, col2 = st.columns([2, 1])
         with col1:
             st.subheader("⚠️ 全体：優先復習単元")
-            st.dataframe(summary_clean.sort_values('得点率(%)').head(10), column_config={"得点率(%)": st.column_config.NumberColumn(format="%.1f%%")}, use_container_width=True, hide_index=True)
+            # 得点率の低い順にソートして表示
+            st.dataframe(
+                summary_clean.sort_values('得点率(%)').head(10), 
+                column_config={
+                    "得点率(%)": st.column_config.ProgressColumn(
+                        "得点率", 
+                        format="%.1f%%", 
+                        min_value=0, 
+                        max_value=100
+                    ),
+                    "判定": st.column_config.TextColumn("状態", width="small")
+                },
+                use_container_width=True, 
+                hide_index=True
+            )
         with col2:
             st.subheader("教科別平均")
             sub_sum = df_show.groupby('教科')[['点数', '配点']].sum().reset_index()
-            sub_sum['得点率'] = (sub_sum['点数']/sub_sum['配点']*100).round(1)
-            sub_sum_clean = pd.DataFrame(sub_sum.to_dict('list'))
-            sub_sum_clean.columns = [str(c) for c in sub_sum_clean.columns]
-            st.dataframe(sub_sum_clean, hide_index=True)
+            sub_sum['得点率(%)'] = (sub_sum['点数']/sub_sum['配点']*100).fillna(0).round(1)
+            st.dataframe(
+                sub_sum[['教科', '得点率(%)']], 
+                column_config={
+                    "得点率(%)": st.column_config.ProgressColumn(
+                        "平均点率",
+                        format="%.1f%%",
+                        min_value=0,
+                        max_value=100
+                    )
+                },
+                hide_index=True
+            )
             
         st.markdown("---")
         st.subheader("📚 教科ごとの弱点")
@@ -522,21 +506,50 @@ if not st.session_state['clean_df'].empty:
                 st.markdown(f"**{sub}**")
                 sub_df = summary_clean[summary_clean['教科'] == sub].sort_values('得点率(%)').head(5)
                 if not sub_df.empty:
-                    st.dataframe(sub_df[['内容', '得点率(%)']], column_config={"得点率(%)": st.column_config.NumberColumn(format="%.1f%%")}, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        sub_df[['内容', '判定', '得点率(%)']], 
+                        column_config={
+                            "得点率(%)": st.column_config.ProgressColumn(
+                                format="%.0f%%", min_value=0, max_value=100
+                            ),
+                            "判定": st.column_config.TextColumn(width="small")
+                        },
+                        use_container_width=True, 
+                        hide_index=True
+                    )
                 else: st.caption("データなし")
 
     with tab2:
         st.subheader("AI家庭教師による指導")
+        
+        # データ準備
+        summary_t2 = df_show.groupby(['教科', '内容'])[['点数', '配点']].sum().reset_index()
+        summary_t2['得点率(%)'] = (summary_t2['点数'] / summary_t2['配点'] * 100).fillna(0).round(1)
+
         c1, c2 = st.columns(2)
-        with c1: sel_sub = st.selectbox("教科", summary['教科'].unique())
-        with c2: sel_top = st.selectbox("単元", summary[summary['教科']==sel_sub].sort_values('得点率(%)')['内容'])
+        with c1: 
+            sel_sub = st.selectbox("教科", summary_t2['教科'].unique())
+        
+        with c2:
+            # 選択肢に色と得点率を表示するロジック
+            sub_topics = summary_t2[summary_t2['教科']==sel_sub].sort_values('得点率(%)')
+            
+            # 表示名と実データのマッピング作成
+            topic_map = {}
+            for _, row in sub_topics.iterrows():
+                icon = get_status_emoji(row['得点率(%)'])
+                display_name = f"{icon} {row['内容']} ({row['得点率(%)']}%)"
+                topic_map[display_name] = row['内容']
+            
+            sel_top_display = st.selectbox("単元 (🔴苦手 / 🟡注意 / 🟢定着)", options=list(topic_map.keys()))
+            sel_top = topic_map[sel_top_display] # 実データ名に戻す
         
         target_rows = df_show[(df_show['教科']==sel_sub) & (df_show['内容']==sel_top)]
         rate = (target_rows['点数'].sum() / target_rows['配点'].sum() * 100).round(1)
         original_topics = target_rows['詳細'].unique().tolist()
         original_topics_str = "、".join([str(t) for t in original_topics])
         
-        st.info(f"単元: **{sel_top}** (得点率: {rate}%)")
+        st.info(f"選択単元: **{sel_top}** (得点率: {rate}%)")
         st.caption(f"詳細: {original_topics_str}")
         book = st.session_state['textbooks'].get(sel_sub, "参考書")
         
