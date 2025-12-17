@@ -16,7 +16,7 @@ import base64
 st.set_page_config(page_title="新潟高校 合格ナビ", layout="wide", page_icon="🏔️")
 
 # --------------------------------------------------------------------------------
-# 🎨 UIデザイン & CSS (QB風・スマホ最適化・固定カウントダウン)
+# 🎨 UIデザイン & CSS
 # --------------------------------------------------------------------------------
 exam_date = datetime.date(2026, 3, 4) 
 today = datetime.date.today()
@@ -163,7 +163,7 @@ except Exception as e:
     st.stop()
 
 # ---------------------------------------------------------
-# 💾 データ管理
+# 💾 データ管理 (保存ロジック修正版)
 # ---------------------------------------------------------
 if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
 if 'clean_df' not in st.session_state: st.session_state['clean_df'] = pd.DataFrame()
@@ -171,20 +171,25 @@ if 'category_map' not in st.session_state: st.session_state['category_map'] = {}
 if 'textbooks' not in st.session_state: st.session_state['textbooks'] = {}
 
 def compress_data_to_code(data_dict):
+    """データを圧縮して文字列化する（エラーハンドリング強化）"""
     try:
-        json_str = json.dumps(data_dict, ensure_ascii=False)
+        # default=str を追加して、日付データやNumpy型があっても強制的に文字列化する
+        json_str = json.dumps(data_dict, ensure_ascii=False, default=str)
         compressed = gzip.compress(json_str.encode('utf-8'))
         b64_str = base64.b64encode(compressed).decode('utf-8')
         return b64_str
     except Exception as e:
+        st.error(f"⚠️ データ保存コード生成中にエラーが発生しました: {e}")
         return None
 
 def decompress_code_to_data(b64_str):
+    """文字列をデータに戻す"""
     try:
         compressed = base64.b64decode(b64_str)
         json_str = gzip.decompress(compressed).decode('utf-8')
         return json.loads(json_str)
     except Exception as e:
+        st.error(f"⚠️ データ復元中にエラーが発生しました: {e}")
         return None
 
 FIXED_CATEGORIES = {
@@ -196,7 +201,7 @@ FIXED_CATEGORIES = {
 }
 
 # ---------------------------------------------------------
-# 🛠️ 関数定義 (修正: 重複カラム対策)
+# 🛠️ 関数定義
 # ---------------------------------------------------------
 def ask_gemini_robust(prompt, image_list=None, use_flash=False):
     max_retries = 3
@@ -242,7 +247,6 @@ def parse_csv(file):
             
             subset = df.iloc[idx:, col_idx:].reset_index(drop=True).T
             
-            # --- 修正箇所: カラム名の重複除去処理 ---
             raw_cols = [str(val).strip() for val in subset.iloc[0]]
             new_cols = []
             seen = {}
@@ -254,7 +258,6 @@ def parse_csv(file):
                     seen[c] = 0
                     new_cols.append(c)
             subset.columns = new_cols
-            # ---------------------------------------
             
             subset = subset[1:]
             
@@ -335,16 +338,13 @@ def process_and_categorize():
         st.session_state['clean_df'] = df_clean
         status.update(label="✅ 完了！", state="complete", expanded=False)
 
-# ---------------------------------------------------------
-# 🎨 カラー判定ヘルパー関数
-# ---------------------------------------------------------
 def get_status_emoji(rate):
     if rate <= 50: return "🔴"
     elif rate <= 70: return "🟡"
     else: return "🟢"
 
 # ---------------------------------------------------------
-# 🖥️ サイドバー設定 (簡単同期機能)
+# 🖥️ サイドバー設定 (修正: 安全な保存・復元)
 # ---------------------------------------------------------
 with st.sidebar:
     st.subheader("📲 簡単データ移行")
@@ -354,18 +354,38 @@ with st.sidebar:
     
     with sync_tab1:
         if st.session_state['data_store'] or st.session_state['textbooks']:
+            
+            # --- 【修正】Category Mapのキー(タプル)を文字列に安全変換 ---
+            safe_category_map = {}
+            for k, v in st.session_state['category_map'].items():
+                try:
+                    if isinstance(k, (list, tuple)) and len(k) >= 2:
+                        safe_category_map[f"{k[0]}:{k[1]}"] = v
+                    else:
+                        safe_category_map[str(k)] = v
+                except: continue
+
+            # --- 【修正】DataFrameをJSON化 (日付等に対応) ---
+            safe_data_store = {}
+            for name, df in st.session_state['data_store'].items():
+                try:
+                    safe_data_store[name] = df.to_json(orient='split', force_ascii=False, date_format='iso')
+                except:
+                    pass
+
             backup_data = {
                 'textbooks': st.session_state['textbooks'],
-                'data_store': {name: df.to_json(orient='split') for name, df in st.session_state['data_store'].items()},
-                'category_map': {f"{k[0]}:{k[1]}": v for k, v in st.session_state['category_map'].items()}
+                'data_store': safe_data_store,
+                'category_map': safe_category_map
             }
+            
             save_code = compress_data_to_code(backup_data)
             
             if save_code:
                 st.info("👇 このコードをコピーして、LINEやメモ帳でスマホに送ってください。")
                 st.code(save_code, language="text")
             else:
-                st.error("データ作成に失敗しました")
+                st.warning("保存コードの生成に失敗しました。（エラー詳細は画面上部）")
         else:
             st.caption("データがありません")
 
@@ -376,24 +396,32 @@ with st.sidebar:
                 restored_data = decompress_code_to_data(input_code.strip())
                 if restored_data:
                     try:
+                        # 教材データの復元
                         if 'textbooks' in restored_data: st.session_state['textbooks'] = restored_data['textbooks']
+                        
+                        # 成績データの復元
                         if 'data_store' in restored_data:
                             st.session_state['data_store'] = {}
                             for name, df_json in restored_data['data_store'].items():
                                 st.session_state['data_store'][name] = pd.read_json(df_json, orient='split')
+                        
+                        # カテゴリマップの復元（文字列 "数:関" → タプル ("数","関") に戻す）
                         if 'category_map' in restored_data:
                             st.session_state['category_map'] = {}
                             for k, v in restored_data['category_map'].items():
                                 if ':' in k:
                                     s, t = k.split(':', 1)
                                     st.session_state['category_map'][(s, t)] = v
+                                else:
+                                    # 万が一フォーマットが違う場合
+                                    st.session_state['category_map'][(k, k)] = v
                         
                         st.session_state['clean_df'] = pd.DataFrame() 
                         st.success("✅ 復元完了！画面を更新します。")
                         time.sleep(1)
                         st.rerun()
                     except Exception as e:
-                        st.error(f"復元エラー: {e}")
+                        st.error(f"復元処理中にエラー: {e}")
                 else:
                     st.error("コードが間違っているか、壊れています。")
 
@@ -485,7 +513,6 @@ if not st.session_state['clean_df'].empty:
         col1, col2 = st.columns([2, 1])
         with col1:
             st.subheader("⚠️ 全体：優先復習単元")
-            # 得点率の低い順にソートして表示
             st.dataframe(
                 summary_clean.sort_values('得点率(%)').head(10), 
                 column_config={
@@ -552,10 +579,8 @@ if not st.session_state['clean_df'].empty:
             sel_sub = st.selectbox("教科", summary_t2['教科'].unique())
         
         with c2:
-            # 選択肢に色と得点率を表示するロジック
             sub_topics = summary_t2[summary_t2['教科']==sel_sub].sort_values('得点率(%)')
             
-            # 表示名と実データのマッピング作成
             topic_map = {}
             for _, row in sub_topics.iterrows():
                 icon = get_status_emoji(row['得点率(%)'])
@@ -563,7 +588,7 @@ if not st.session_state['clean_df'].empty:
                 topic_map[display_name] = row['内容']
             
             sel_top_display = st.selectbox("単元 (🔴苦手 / 🟡注意 / 🟢定着)", options=list(topic_map.keys()))
-            sel_top = topic_map[sel_top_display] # 実データ名に戻す
+            sel_top = topic_map[sel_top_display]
         
         target_rows = df_show[(df_show['教科']==sel_sub) & (df_show['内容']==sel_top)]
         rate = (target_rows['点数'].sum() / target_rows['配点'].sum() * 100).round(1)
