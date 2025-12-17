@@ -20,18 +20,15 @@ if not api_key:
 else:
     genai.configure(api_key=api_key)
     
-    # 👇 【修正】エラー対策: テキスト用には安定版の 'gemini-pro' を使用
+    # 👇 【変更】現在利用可能な「最も賢いモデル」である 1.5 Pro に変更しました。
+    # ※ Flashよりも少し計算に時間がかかりますが、記述問題の採点やアドバイスの質が向上します。
     try:
-        model_text = genai.GenerativeModel('gemini-pro')
+        model_text = genai.GenerativeModel('gemini-1.5-pro')
+        model_vision = genai.GenerativeModel('gemini-1.5-pro')
     except:
-        # 万が一 gemini-pro もダメなら 1.5-flash を試す
+        # 万が一 Pro が使えない場合は Flash にフォールバック
         model_text = genai.GenerativeModel('gemini-1.5-flash')
-
-    # 画像用は 1.5-flash を優先しつつ、だめなら gemini-pro-vision に切り替え
-    try:
         model_vision = genai.GenerativeModel('gemini-1.5-flash')
-    except:
-        model_vision = genai.GenerativeModel('gemini-pro-vision')
 
 # ---------------------------------------------------------
 # 1. 設定 & UI初期化
@@ -165,7 +162,7 @@ def categorize_topics_with_ai(df_all):
             unknown_list.append(f"{subj}: {topic}")
     
     if unknown_list:
-        with st.spinner(f"AIが {len(unknown_list)} 件の単元を標準カテゴリに整理中..."):
+        with st.spinner(f"AI(Gemini Pro)が {len(unknown_list)} 件の単元を標準カテゴリに整理中..."):
             categories_str = json.dumps(FIXED_CATEGORIES, ensure_ascii=False, indent=2)
             prompt = f"""
             入力された「教科: 単元名」を、以下の【定義済みカテゴリリスト】の中から最も適切なものに分類し、JSON形式で出力してください。
@@ -286,7 +283,7 @@ with tab2:
         book = st.session_state['textbooks'].get(sel_sub, "参考書")
         
         if st.button("① 復習ポイントを聞く"):
-            with st.spinner("AI思考中..."):
+            with st.spinner("AI(Gemini Pro)が思考中..."):
                 p = f"""
                 新潟高校志望。教科「{sel_sub}」、カテゴリ「{sel_top}」（詳細は{original_topics_str}など）が苦手（得点率{rate}%）。
                 参考書『{book}』のどこを見るべきか、新潟高校レベルの理解の深さ、チェック項目3つを教えて。
@@ -337,7 +334,7 @@ with tab4:
     st.markdown("---")
     if img_prob and img_user and img_ans:
         if st.button("🚀 採点実行"):
-            with st.spinner("分析中..."):
+            with st.spinner("AI(Gemini Pro)が分析中..."):
                 try:
                     images = [PIL.Image.open(img_prob), PIL.Image.open(img_user), PIL.Image.open(img_ans)]
                     prompt_vision = f"新潟高校志望。3枚の画像（問題、生徒解答、模範解答）から、採点結果(正誤)、詳細な添削コメント、原因分析と対策、類題作成を行って。"
