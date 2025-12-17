@@ -19,8 +19,19 @@ if not api_key:
     st.stop()
 else:
     genai.configure(api_key=api_key)
-    model_vision = genai.GenerativeModel('gemini-1.5-flash')
-    model_text = genai.GenerativeModel('gemini-1.5-flash')
+    
+    # 👇 【修正】エラー対策: テキスト用には安定版の 'gemini-pro' を使用
+    try:
+        model_text = genai.GenerativeModel('gemini-pro')
+    except:
+        # 万が一 gemini-pro もダメなら 1.5-flash を試す
+        model_text = genai.GenerativeModel('gemini-1.5-flash')
+
+    # 画像用は 1.5-flash を優先しつつ、だめなら gemini-pro-vision に切り替え
+    try:
+        model_vision = genai.GenerativeModel('gemini-1.5-flash')
+    except:
+        model_vision = genai.GenerativeModel('gemini-pro-vision')
 
 # ---------------------------------------------------------
 # 1. 設定 & UI初期化
@@ -37,34 +48,14 @@ if 'confirm_delete' not in st.session_state: st.session_state['confirm_delete'] 
 if 'category_map' not in st.session_state: st.session_state['category_map'] = {}
 
 # ==========================================
-# 📌 ここに12分類（+国語5分類）を直接定義しました
+# 📌 12分類（+国語5分類）定義
 # ==========================================
 FIXED_CATEGORIES = {
-    "国語": [
-        "漢字", "文法", "評論", "古文", "その他"
-    ],
-    "数学": [
-        "数と式", "方程式・不等式", "関数(比例・1次)", "関数(2次・その他)", 
-        "平面図形", "空間図形", "図形の証明", "確率", 
-        "データの活用", "整数・規則性", "作図", "融合問題・その他"
-    ],
-    "英語": [
-        "単語・語彙", "文法(時制・動詞)", "文法(準動詞・関係詞)", "文法(その他)", 
-        "長文読解(物語)", "長文読解(説明文)", "英作文", "リスニング", 
-        "会話文", "語順整序", "適語補充", "その他"
-    ],
-    "理科": [
-        "物理(光・音・力)", "物理(電気・磁界)", "物理(運動・エネルギー)", 
-        "化学(物質・気体)", "化学(変化・原子)", "化学(イオン・電池)", 
-        "生物(植物)", "生物(動物・人体)", "生物(遺伝・進化)", 
-        "地学(火山・地層)", "地学(天気・気象)", "地学(天体)"
-    ],
-    "社会": [
-        "地理(世界)", "地理(日本)", "地理(資料読取)", 
-        "歴史(古代～中世)", "歴史(近世)", "歴史(近現代)", 
-        "公民(現代社会・人権)", "公民(政治)", "公民(経済)", "公民(国際)", 
-        "融合問題", "その他"
-    ]
+    "国語": ["漢字", "文法", "評論", "古文", "その他"],
+    "数学": ["数と式", "方程式・不等式", "関数(比例・1次)", "関数(2次・その他)", "平面図形", "空間図形", "図形の証明", "確率", "データの活用", "整数・規則性", "作図", "融合問題・その他"],
+    "英語": ["単語・語彙", "文法(時制・動詞)", "文法(準動詞・関係詞)", "文法(その他)", "長文読解(物語)", "長文読解(説明文)", "英作文", "リスニング", "会話文", "語順整序", "適語補充", "その他"],
+    "理科": ["物理(光・音・力)", "物理(電気・磁界)", "物理(運動・エネルギー)", "化学(物質・気体)", "化学(変化・原子)", "化学(イオン・電池)", "生物(植物)", "生物(動物・人体)", "生物(遺伝・進化)", "地学(火山・地層)", "地学(天気・気象)", "地学(天体)"],
+    "社会": ["地理(世界)", "地理(日本)", "地理(資料読取)", "歴史(古代～中世)", "歴史(近世)", "歴史(近現代)", "公民(現代社会・人権)", "公民(政治)", "公民(経済)", "公民(国際)", "融合問題", "その他"]
 }
 
 # --- サイドバー ---
@@ -162,7 +153,7 @@ def ask_gemini_vision(prompt, image_list):
         return response.text
     except Exception as e: return f"エラー: {e}"
 
-# 👇 固定カテゴリへの振り分けを行う関数
+# カテゴリ分類関数
 def categorize_topics_with_ai(df_all):
     unique_pairs = df_all[['教科', '内容']].drop_duplicates()
     unknown_list = []
@@ -175,30 +166,13 @@ def categorize_topics_with_ai(df_all):
     
     if unknown_list:
         with st.spinner(f"AIが {len(unknown_list)} 件の単元を標準カテゴリに整理中..."):
-            # プロンプトを作成（定義したカテゴリリストを埋め込む）
             categories_str = json.dumps(FIXED_CATEGORIES, ensure_ascii=False, indent=2)
-            
             prompt = f"""
-            あなたは学習塾の教務システムです。
-            入力された「教科: 単元名」を、以下の【定義済みカテゴリリスト】の中から最も適切なものに分類してください。
-
+            入力された「教科: 単元名」を、以下の【定義済みカテゴリリスト】の中から最も適切なものに分類し、JSON形式で出力してください。
             【定義済みカテゴリリスト】
             {categories_str}
-
-            【分類ルール】
-            1. 必ず上記のリストにある言葉だけを使ってください。勝手に新しい言葉を作らないでください。
-            2. 「その他」に分類する教科は、リストにない教科の場合だけにしてください。リストにある教科なら、できるだけ内容に近いものを選んでください。
-            
             【入力データ】
-            """ + "\n".join(unknown_list) + """
-
-            【出力形式】
-            以下のJSON形式のみを出力してください（Markdownタグ不要）。
-            {
-                "教科: 元の単元名": "定義済みカテゴリ名",
-                ...
-            }
-            """
+            """ + "\n".join(unknown_list)
             
             try:
                 response = ask_gemini_text(prompt)
@@ -277,9 +251,7 @@ with tab1:
             st.write("⚠️ 優先復習単元")
             st.dataframe(
                 summary_clean.sort_values('得点率(%)').head(10),
-                column_config={
-                    "得点率(%)": st.column_config.NumberColumn(format="%.1f%%")
-                },
+                column_config={"得点率(%)": st.column_config.NumberColumn(format="%.1f%%")},
                 use_container_width=True,
                 hide_index=True
             )
