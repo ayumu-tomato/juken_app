@@ -32,7 +32,7 @@ st.title("🏔️ 新潟高校 合格ストラテジー & 徹底復習")
 # データ保存用の領域初期化
 if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
 if 'textbooks' not in st.session_state: st.session_state['textbooks'] = {}
-if 'confirm_delete' not in st.session_state: st.session_state['confirm_delete'] = False # 削除確認フラグ
+if 'confirm_delete' not in st.session_state: st.session_state['confirm_delete'] = False
 
 # --- サイドバー ---
 st.sidebar.header("📚 使用教材の設定")
@@ -53,22 +53,18 @@ st.sidebar.subheader("💾 保存されたデータ")
 if st.session_state['data_store']:
     st.sidebar.success(f"{len(st.session_state['data_store'])} 件のファイルを記憶中")
     
-    # --- 削除確認ロジック ---
+    # 削除確認ロジック
     if not st.session_state['confirm_delete']:
-        # 通常時は「全消去」ボタンを表示
         if st.sidebar.button("🗑️ データを全消去"):
             st.session_state['confirm_delete'] = True
             st.rerun()
     else:
-        # 確認モード時は「本当に？」と「キャンセル」を表示
-        st.sidebar.warning("⚠️ 本当に全てのデータを削除しますか？（復元できません）")
+        st.sidebar.warning("⚠️ 本当に全てのデータを削除しますか？")
         col_yes, col_no = st.sidebar.columns(2)
-        
         if col_yes.button("はい、削除", type="primary"):
             st.session_state['data_store'] = {}
             st.session_state['confirm_delete'] = False
             st.rerun()
-        
         if col_no.button("キャンセル"):
             st.session_state['confirm_delete'] = False
             st.rerun()
@@ -79,26 +75,51 @@ else:
 # 2. 関数定義
 # ---------------------------------------------------------
 def parse_csv(file):
+    """CSVを読み込む関数（文字コード対応版）"""
     try:
-        df = pd.read_csv(file, header=None)
+        # ファイルポインタを初期位置に
+        file.seek(0)
+        
+        # まず一般的なUTF-8で試す
+        try:
+            df = pd.read_csv(file, header=None)
+        except UnicodeDecodeError:
+            # 失敗したらShift-JIS (Excel形式) で試す
+            file.seek(0)
+            df = pd.read_csv(file, header=None, encoding='cp932')
+        
+        # 読み込み成功後、必要な行を探す
         header_idx = df[df.apply(lambda r: r.astype(str).str.contains('大問|内容').any(), axis=1)].index
+        
         if len(header_idx) > 0:
             idx = header_idx[0]
             subset = df.iloc[idx:].reset_index(drop=True).T
             subset.columns = subset.iloc[0]
             subset = subset[1:]
-            if '大問' in subset.columns: subset = subset.dropna(subset=['大問'])
+            
+            # 不要な行の削除と数値化
+            if '大問' in subset.columns:
+                subset = subset.dropna(subset=['大問'])
+            
             subset['点数'] = pd.to_numeric(subset['点数'], errors='coerce').fillna(0)
             subset['配点'] = pd.to_numeric(subset['配点'], errors='coerce').fillna(0)
             subset['ファイル名'] = file.name
+            
+            # 教科判定
             for sub in ['数学','英語','理科','社会','国語']:
                 if sub in file.name:
                     subset['教科'] = sub
                     break
-            else: subset['教科'] = 'その他'
+            else:
+                subset['教科'] = 'その他'
+            
             return subset
+        else:
+            # '大問'などのキーワードが見つからない場合
+            return None
+            
+    except Exception:
         return None
-    except: return None
 
 def ask_gemini_text(prompt):
     try:
@@ -111,24 +132,36 @@ def ask_gemini_vision(prompt, image_list):
         response = model_vision.generate_content(content)
         return response.text
     except Exception as e:
-        return f"エラーが発生しました: {e}\n画像を認識できない可能性があります。"
+        return f"エラーが発生しました: {e}"
 
 # ---------------------------------------------------------
 # 3. メイン画面（ファイルアップロード）
 # ---------------------------------------------------------
 st.markdown("##### 📂 学習データのアップロード（CSV）")
+st.caption("Excel等で作成したCSVも読み込めます。")
+
 with st.form("upload_form", clear_on_submit=True):
     uploaded_files = st.file_uploader("CSVファイルを選択（複数可）", accept_multiple_files=True, type=['csv'], label_visibility="collapsed")
     submit_upload = st.form_submit_button("📥 読み込んで保存")
+    
     if submit_upload and uploaded_files:
         new_c, over_c = 0, 0
+        error_count = 0
+        
         for file in uploaded_files:
             df = parse_csv(file)
             if df is not None:
                 if file.name in st.session_state['data_store']: over_c += 1
                 else: new_c += 1
                 st.session_state['data_store'][file.name] = df
-        st.success(f"✅ 新規:{new_c}件 / 上書き:{over_c}件 保存完了")
+            else:
+                error_count += 1
+        
+        if new_c > 0 or over_c > 0:
+            st.success(f"✅ 新規:{new_c}件 / 上書き:{over_c}件 保存完了")
+        
+        if error_count > 0:
+            st.error(f"⚠️ {error_count}件のファイルは形式が読み取れませんでした。")
 
 # ---------------------------------------------------------
 # 4. 機能タブ
