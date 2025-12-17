@@ -1,3 +1,5 @@
-﻿streamlit
+streamlit
 pandas
 google-generativeai
+Pillow
+matplotlib
