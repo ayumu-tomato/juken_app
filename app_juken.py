@@ -5,6 +5,7 @@ import datetime
 import PIL.Image
 import json
 import re
+import time # 待機用
 
 # ==========================================
 # 🔐 1. セキュリティ設定 & 接続診断
@@ -24,49 +25,68 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # ---------------------------------------------------------
-# 🚑 モデル自動検出 & 選択機能（ここが修復の肝です）
+# 🚑 モデル自動検出 & 選択機能
 # ---------------------------------------------------------
 st.sidebar.header("⚙️ システム設定")
 
-# 利用可能なモデルを取得してみる
+# 利用可能なモデルを取得
 try:
     available_models = []
+    # 接続テストも兼ねてモデル一覧を取得
     for m in genai.list_models():
         if 'generateContent' in m.supported_generation_methods:
             available_models.append(m.name)
     
-    if not available_models:
-        st.error("❌ 利用可能なモデルが見つかりません。APIキーが無効か、Google側の障害の可能性があります。")
-        st.stop()
-
-    # 優先順位: 1.5-pro -> 1.5-flash -> gemini-pro
+    # 【重要】デフォルトを Flash (高速・無料枠が大きい) に設定
+    # これにより 429 エラーを回避します
     default_index = 0
     for i, m_name in enumerate(available_models):
-        if "gemini-1.5-pro" in m_name:
+        if "gemini-1.5-flash" in m_name:
             default_index = i
             break
-        elif "gemini-1.5-flash" in m_name: # proがない場合の第2候補
-            default_index = i
             
-    # ユーザーがモデルを選べるようにする（これで404回避）
     selected_model_name = st.sidebar.selectbox(
         "使用するAIモデル",
         available_models,
         index=default_index,
-        help="エラーが出る場合は別のモデルに切り替えてください"
+        help="Proは賢いですが制限（1分に2回）があります。Flashは高速で安定しています。"
     )
     
-    # 選択されたモデルで初期化
-    model_text = genai.GenerativeModel(selected_model_name)
-    model_vision = genai.GenerativeModel(selected_model_name)
+    model_main = genai.GenerativeModel(selected_model_name)
     
-    st.sidebar.success(f"✅ {selected_model_name} に接続中")
-    st.sidebar.caption(f"Lib Version: {genai.__version__}")
-
+    st.sidebar.success(f"✅ {selected_model_name} で稼働中")
+    
 except Exception as e:
     st.error(f"接続エラー: {e}")
+    st.warning("APIキーが正しいか、Google側のサーバーがダウンしていないか確認してください。")
     st.stop()
 
+# ---------------------------------------------------------
+# 🛡️ エラー回避用の「待機＆リトライ」関数
+# ---------------------------------------------------------
+def ask_gemini_robust(prompt, image_list=None):
+    """429エラーが出たら少し待って再送する頑丈な関数"""
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            if image_list:
+                content = [prompt] + image_list
+                response = model_main.generate_content(content)
+            else:
+                response = model_main.generate_content(prompt)
+            return response.text
+        except Exception as e:
+            error_msg = str(e)
+            # 429 (Resource Exhausted) エラーの場合
+            if "429" in error_msg or "Quota" in error_msg:
+                wait_time = (attempt + 1) * 5 # 5秒, 10秒, 15秒と待機時間を増やす
+                st.toast(f"⏳ アクセス集中（429）。{wait_time}秒待機して再試行します...({attempt+1}/{max_retries})")
+                time.sleep(wait_time)
+            else:
+                # その他のエラーは即座に返す
+                return f"エラーが発生しました: {e}"
+    
+    return "❌ アクセス制限により応答できませんでした。時間を置いて再度試してください。"
 
 # ---------------------------------------------------------
 # 2. アプリの共通設定
@@ -168,18 +188,6 @@ def parse_csv(file):
         return None
     except Exception: return None
 
-def ask_gemini_text(prompt):
-    try:
-        return model_text.generate_content(prompt).text
-    except Exception as e: return f"エラー: {e}"
-
-def ask_gemini_vision(prompt, image_list):
-    try:
-        content = [prompt] + image_list
-        response = model_vision.generate_content(content)
-        return response.text
-    except Exception as e: return f"エラー: {e}"
-
 def categorize_topics_with_ai(df_all):
     unique_pairs = df_all[['教科', '内容']].drop_duplicates()
     unknown_list = []
@@ -200,8 +208,10 @@ def categorize_topics_with_ai(df_all):
             【入力データ】
             """ + "\n".join(unknown_list)
             
+            # リトライ付き関数で呼び出し
+            response = ask_gemini_robust(prompt)
+            
             try:
-                response = ask_gemini_text(prompt)
                 json_match = re.search(r'\{.*\}', response, re.DOTALL)
                 if json_match:
                     mapping = json.loads(json_match.group())
@@ -210,7 +220,7 @@ def categorize_topics_with_ai(df_all):
                             s, t = k.split(':', 1)
                             st.session_state['category_map'][(s.strip(), t.strip())] = v.strip()
             except Exception as e:
-                st.error(f"分類エラー: {e}")
+                pass
 
     df_clean = df_all.copy()
     if '詳細' not in df_clean.columns:
@@ -309,16 +319,16 @@ with tab2:
         book = st.session_state['textbooks'].get(sel_sub, "参考書")
         
         if st.button("① 復習ポイントを聞く"):
-            with st.spinner("思考中..."):
+            with st.spinner("AIが思考中..."):
                 p = f"新潟高校志望。教科「{sel_sub}」、カテゴリ「{sel_top}」（詳細は{original_topics_str}など）が苦手（得点率{rate}%）。参考書『{book}』のどこを見るべきか、新潟高校レベルの理解の深さ、チェック項目3つを教えて。"
-                st.session_state['guide'] = ask_gemini_text(p)
+                st.session_state['guide'] = ask_gemini_robust(p)
         
         if 'guide' in st.session_state:
             st.markdown(st.session_state['guide'])
             if st.button("② 確認テストをする"):
                 with st.spinner("作成中..."):
                     p2 = f"新潟高校レベル。{sel_sub}の「{sel_top}」（詳細: {original_topics_str}）の実践問題1問作成。解答解説付き。"
-                    st.session_state['test'] = ask_gemini_text(p2)
+                    st.session_state['test'] = ask_gemini_robust(p2)
         
         if 'test' in st.session_state:
             st.markdown("---")
@@ -329,7 +339,7 @@ with tab2:
 with tab3:
     if st.button("計画作成"):
         with st.spinner("作成中..."):
-            st.markdown(ask_gemini_text(f"今日{datetime.date.today()}から入試{EXAM_DATE}までの新潟高校合格スケジュール。"))
+            st.markdown(ask_gemini_robust(f"今日{datetime.date.today()}から入試{EXAM_DATE}までの新潟高校合格スケジュール。"))
 
 with tab4:
     st.subheader("📷 画像採点")
@@ -354,12 +364,9 @@ with tab4:
     st.markdown("---")
     if img_prob and img_user and img_ans:
         if st.button("🚀 採点実行"):
-            with st.spinner("分析中..."):
-                try:
-                    images = [PIL.Image.open(img_prob), PIL.Image.open(img_user), PIL.Image.open(img_ans)]
-                    prompt_vision = f"新潟高校志望。3枚の画像から、採点結果(正誤)、添削コメント、原因分析と対策、類題作成を行って。"
-                    st.markdown(ask_gemini_vision(prompt_vision, images))
-                except Exception as e:
-                    st.error(f"エラー: {e}")
+            with st.spinner("AIが分析中..."):
+                images = [PIL.Image.open(img_prob), PIL.Image.open(img_user), PIL.Image.open(img_ans)]
+                prompt_vision = f"新潟高校志望。3枚の画像から、採点結果(正誤)、添削コメント、原因分析と対策、類題作成を行って。"
+                st.markdown(ask_gemini_robust(prompt_vision, image_list=images))
     else:
         st.warning("☝️ 3枚全ての画像をセットしてください。")
