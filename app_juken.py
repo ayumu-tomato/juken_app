@@ -9,6 +9,11 @@ import time
 import io
 import gzip
 import base64
+# 音声生成用ライブラリ
+try:
+    from gtts import gTTS
+except ImportError:
+    gTTS = None
 
 # ==========================================
 # 🔐 初期設定
@@ -16,7 +21,7 @@ import base64
 st.set_page_config(page_title="新潟高校 合格ナビ", layout="wide", page_icon="🏔️")
 
 # --------------------------------------------------------------------------------
-# 🎨 UIデザイン & CSS (QB風・スマホ最適化・固定カウントダウン)
+# 🎨 UIデザイン & CSS
 # --------------------------------------------------------------------------------
 exam_date = datetime.date(2026, 3, 4) 
 today = datetime.date.today()
@@ -54,7 +59,7 @@ st.markdown(f"""
         .count-number {{ font-size: 16px; }}
     }}
 
-    /* QB風カード */
+    /* カードデザイン */
     div[data-testid="stVerticalBlock"] > div:has(div.stDataFrame), 
     div[data-testid="stVerticalBlock"] > div:has(div.stMarkdown) {{
         background-color: white;
@@ -86,17 +91,8 @@ st.markdown(f"""
     }}
     .stButton > button:active {{ transform: scale(0.98); }}
     button[kind="primary"] {{ background-color: #007bff !important; color: white !important; }}
-
-    .stTabs [data-baseweb="tab-list"] {{ gap: 10px; background-color: transparent; }}
-    .stTabs [data-baseweb="tab"] {{
-        background-color: white;
-        border-radius: 8px 8px 0 0;
-        padding: 10px 20px;
-        box-shadow: 0 -2px 5px rgba(0,0,0,0.02);
-    }}
-    .stTabs [aria-selected="true"] {{ background-color: #007bff !important; color: white !important; }}
     
-    /* 反省コメントのスタイル */
+    /* 反省コメント */
     .reflection-box {{
         background-color: #fff3cd;
         border-left: 5px solid #ffc107;
@@ -125,7 +121,7 @@ if not api_key:
 genai.configure(api_key=api_key)
 
 # ---------------------------------------------------------
-# 🤖 モデル自動検出
+# 🤖 モデル設定
 # ---------------------------------------------------------
 def get_available_models():
     try:
@@ -143,12 +139,10 @@ def get_best_pro_model(all_models):
     ]
     for m in priority_list:
         if m in all_models: return m
-    
     pro_models = [m for m in all_models if "pro" in m and "vision" not in m]
     if pro_models:
         pro_models.sort(reverse=True)
         return pro_models[0]
-            
     return "gemini-1.5-flash"
 
 def get_best_flash_model(all_models):
@@ -162,15 +156,11 @@ def get_best_flash_model(all_models):
 
 MODEL_NAME_PRO = get_best_pro_model(ALL_MODELS)
 MODEL_NAME_FLASH = get_best_flash_model(ALL_MODELS)
-
 try:
     model_pro = genai.GenerativeModel(MODEL_NAME_PRO)
     model_flash = genai.GenerativeModel(MODEL_NAME_FLASH)
     model_vision = genai.GenerativeModel(MODEL_NAME_PRO)
-    st.sidebar.success(f"🚀 Engine: {MODEL_NAME_PRO}")
-except Exception as e:
-    st.error(f"❌ モデル起動エラー: {e}")
-    st.stop()
+except: pass
 
 # ---------------------------------------------------------
 # 💾 データ管理
@@ -179,25 +169,23 @@ if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
 if 'clean_df' not in st.session_state: st.session_state['clean_df'] = pd.DataFrame()
 if 'category_map' not in st.session_state: st.session_state['category_map'] = {}
 if 'textbooks' not in st.session_state: st.session_state['textbooks'] = {}
+# 特訓モード用セッション
+if 'practice_q' not in st.session_state: st.session_state['practice_q'] = None
+if 'practice_a' not in st.session_state: st.session_state['practice_a'] = None
+if 'practice_script' not in st.session_state: st.session_state['practice_script'] = None
 
 def compress_data_to_code(data_dict):
     try:
         json_str = json.dumps(data_dict, ensure_ascii=False, default=str)
         compressed = gzip.compress(json_str.encode('utf-8'))
-        b64_str = base64.b64encode(compressed).decode('utf-8')
-        return b64_str
-    except Exception as e:
-        st.error(f"⚠️ データ保存処理中にエラーが発生しました: {e}")
-        return None
+        return base64.b64encode(compressed).decode('utf-8')
+    except: return None
 
 def decompress_code_to_data(b64_str):
     try:
         compressed = base64.b64decode(b64_str)
-        json_str = gzip.decompress(compressed).decode('utf-8')
-        return json.loads(json_str)
-    except Exception as e:
-        st.error(f"⚠️ データ復元中にエラーが発生しました: {e}")
-        return None
+        return json.loads(gzip.decompress(compressed).decode('utf-8'))
+    except: return None
 
 FIXED_CATEGORIES = {
     "国語": ["漢字", "文法", "評論", "古文", "その他"],
@@ -215,7 +203,6 @@ def ask_gemini_robust(prompt, image_list=None, use_flash=False):
     if image_list: target_model = model_vision
     elif use_flash: target_model = model_flash
     else: target_model = model_pro
-
     for attempt in range(max_retries):
         try:
             if image_list: response = target_model.generate_content([prompt] + image_list)
@@ -223,16 +210,20 @@ def ask_gemini_robust(prompt, image_list=None, use_flash=False):
             return response.text
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e):
-                st.toast(f"⏳ 待機中 ({attempt+1}/3)")
                 time.sleep((attempt + 1) * 3)
             else: return f"エラー: {e}"
     return "❌ 応答できませんでした。"
 
-def detect_subject(file_name):
-    name_str = str(file_name)
-    for sub in ['数学', '英語', '理科', '社会', '国語']:
-        if sub in name_str: return sub
-    return 'その他'
+def text_to_speech(text, lang='en'):
+    """gTTSで音声を生成"""
+    if gTTS is None: return None
+    try:
+        tts = gTTS(text=text, lang=lang)
+        fp = io.BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        return fp
+    except: return None
 
 def parse_csv(file):
     try:
@@ -241,7 +232,6 @@ def parse_csv(file):
         except: 
             file.seek(0)
             df = pd.read_csv(file, header=None, encoding='cp932')
-        
         header_row_mask = df.apply(lambda r: r.astype(str).str.contains('大問|内容').any(), axis=1)
         if len(df[header_row_mask]) > 0:
             idx = df[header_row_mask].index[0]
@@ -251,36 +241,26 @@ def parse_csv(file):
                 if '大問' in val or '内容' in val:
                     col_idx = c
                     break
-            
             subset = df.iloc[idx:, col_idx:].reset_index(drop=True).T
-            
             raw_cols = [str(val).strip() for val in subset.iloc[0]]
             new_cols = []
             seen = {}
             for c in raw_cols:
-                if c in seen:
-                    seen[c] += 1
-                    new_cols.append(f"{c}_{seen[c]}")
-                else:
-                    seen[c] = 0
-                    new_cols.append(c)
+                if c in seen: seen[c]+=1; new_cols.append(f"{c}_{seen[c]}")
+                else: seen[c]=0; new_cols.append(c)
             subset.columns = new_cols
-            
             subset = subset[1:]
-            
             if '大問' in subset.columns: subset = subset.dropna(subset=['大問'])
-            
-            # 数値データの変換
             subset['点数'] = pd.to_numeric(subset['点数'], errors='coerce').fillna(0)
             subset['配点'] = pd.to_numeric(subset['配点'], errors='coerce').fillna(0)
-            
             subset['ファイル名'] = str(file.name)
-            subset['教科'] = detect_subject(file.name)
-            
-            # 反省カラムがあるかチェックし、文字列として確保
-            if '反省' in subset.columns:
-                subset['反省'] = subset['反省'].fillna("").astype(str)
-            
+            # 教科判定
+            name_str = str(file.name)
+            subj = 'その他'
+            for s in ['数学','英語','理科','社会','国語']:
+                if s in name_str: subj=s
+            subset['教科'] = subj
+            if '反省' in subset.columns: subset['反省'] = subset['反省'].fillna("").astype(str)
             if '点数' in subset.columns: return subset
     except: pass
     return None
@@ -289,74 +269,41 @@ def process_and_categorize():
     if not st.session_state['data_store']:
         st.session_state['clean_df'] = pd.DataFrame()
         return
-
-    model_label = MODEL_NAME_PRO 
-    
-    with st.status(f"🚀 データを解析中... (Engine: {model_label})", expanded=True) as status:
-        st.write("📂 データを結合中...")
+    with st.status(f"🚀 解析中... (Engine: {MODEL_NAME_PRO})", expanded=True) as status:
         try:
-            # 共通するカラムのみを結合しつつ、反省カラムも保持するようにする
-            # concatはカラムが不揃いでも結合してくれる（NaNになる）
             raw_df = pd.concat(st.session_state['data_store'].values(), ignore_index=True)
-        except Exception as e:
-            st.error(f"データ結合エラー: {e}")
-            status.update(label="⚠️ エラー発生", state="error")
-            return
-
-        time.sleep(0.1)
+        except: return
         
-        st.write("🔍 未知の単元を検索中...")
         unique_pairs = raw_df[['教科', '内容']].drop_duplicates()
         unknown_list = []
         for _, row in unique_pairs.iterrows():
             subj = row['教科']
             topic = str(row['内容']).strip()
-            is_perfect = False
-            if subj in FIXED_CATEGORIES and topic in FIXED_CATEGORIES[subj]: is_perfect = True
-            
-            if not is_perfect and (subj, topic) not in st.session_state['category_map']:
+            if subj in FIXED_CATEGORIES and topic in FIXED_CATEGORIES[subj]: continue
+            if (subj, topic) not in st.session_state['category_map']:
                 unknown_list.append(f"{subj}: {topic}")
         
         if unknown_list:
-            st.write(f"🧠 {len(unknown_list)} 件の単元をAIが思考・分類中...")
-            categories_str = json.dumps(FIXED_CATEGORIES, ensure_ascii=False, indent=2)
-            prompt = f"""
-            入試データ分析の専門家として振る舞ってください。
-            入力された「教科: 元の単元名」を分析し、以下の【定義済みマスタ】の中で最も適切なカテゴリに分類してください。
-            【定義済みマスタ】
-            {categories_str}
-            【入力データ】
-            """ + "\n".join(unknown_list) + """
-            【出力形式】
-            JSON形式の辞書 `{ "教科: 元の単元名": "定義済みカテゴリ名", ... }` のみを出力してください。
-            """
+            categories_str = json.dumps(FIXED_CATEGORIES, ensure_ascii=False)
+            prompt = f"「教科:単元」を分析し、最も適切なカテゴリをJSON辞書で出力せよ。\nマスタ: {categories_str}\n入力: {unknown_list}"
             response = ask_gemini_robust(prompt, use_flash=False)
             try:
                 json_match = re.search(r'\{.*\}', response, re.DOTALL)
                 if json_match:
                     mapping = json.loads(json_match.group())
                     for k, v in mapping.items():
-                        if ':' in k:
-                            s, t = k.split(':', 1)
-                            st.session_state['category_map'][(s.strip(), t.strip())] = v.strip()
-            except: st.warning("一部の分類に失敗")
+                        if ':' in k: s, t = k.split(':', 1); st.session_state['category_map'][(s.strip(), t.strip())] = v.strip()
+            except: pass
 
-        st.write("💾 保存中...")
         df_clean = raw_df.copy()
         if '詳細' not in df_clean.columns: df_clean['詳細'] = df_clean['内容']
-        
-        # 反省カラムがない場合の保険
-        if '反省' not in df_clean.columns:
-            df_clean['反省'] = ""
-
+        if '反省' not in df_clean.columns: df_clean['反省'] = ""
         def apply_mapping(row):
             key = (row['教科'], str(row['内容']).strip())
-            mapped = st.session_state['category_map'].get(key, row['内容'])
-            return mapped if mapped else row['内容']
-
+            return st.session_state['category_map'].get(key, row['内容'])
         df_clean['内容'] = df_clean.apply(apply_mapping, axis=1)
         st.session_state['clean_df'] = df_clean
-        status.update(label="✅ 完了！", state="complete", expanded=False)
+        status.update(label="✅ 完了", state="complete", expanded=False)
 
 def get_status_emoji(rate):
     if rate <= 50: return "🔴"
@@ -364,353 +311,255 @@ def get_status_emoji(rate):
     else: return "🟢"
 
 # ---------------------------------------------------------
-# 🖥️ サイドバー設定
+# 🖥️ サイドバー
 # ---------------------------------------------------------
 with st.sidebar:
-    st.subheader("📲 データ移行・保存")
-    st.caption("データ量が多い場合は「ファイル」を使用してください。")
-    
-    sync_tab1, sync_tab2 = st.tabs(["📤 書き出し", "📥 読み込み"])
-    
+    st.subheader("📲 データ管理")
+    sync_tab1, sync_tab2 = st.tabs(["📤 保存", "📥 復元"])
     with sync_tab1:
         if st.session_state['data_store'] or st.session_state['textbooks']:
-            
-            # 1. データを安全な形式に変換
-            safe_category_map = {}
-            for k, v in st.session_state['category_map'].items():
-                try:
-                    if isinstance(k, (list, tuple)) and len(k) >= 2:
-                        safe_category_map[f"{k[0]}:{k[1]}"] = v
-                    else:
-                        safe_category_map[str(k)] = v
-                except: continue
-
-            safe_data_store = {}
-            for name, df in st.session_state['data_store'].items():
-                try:
-                    safe_data_store[name] = df.to_json(orient='split', force_ascii=False, date_format='iso')
-                except: pass
-
-            backup_data = {
-                'textbooks': st.session_state['textbooks'],
-                'data_store': safe_data_store,
-                'category_map': safe_category_map
-            }
-            
-            # 2. 圧縮文字列の生成
-            save_code = compress_data_to_code(backup_data)
-            
-            if save_code:
-                st.download_button(
-                    label="💾 バックアップファイルを保存",
-                    data=save_code,
-                    file_name=f"niigata_backup_{datetime.date.today()}.txt",
-                    mime="text/plain",
-                    type="primary"
-                )
-                
-                st.markdown("---")
-                
-                with st.expander("テキストコードを表示 (少量用)"):
-                    st.info("データが多いとコピーしきれない場合があります。")
-                    st.code(save_code, language="text")
-            else:
-                st.error("データの圧縮に失敗しました。")
-        else:
-            st.caption("保存するデータがありません")
-
+            safe_cat = {f"{k[0]}:{k[1]}" if isinstance(k, tuple) else str(k): v for k, v in st.session_state['category_map'].items()}
+            safe_ds = {n: df.to_json(orient='split', force_ascii=False, date_format='iso') for n, df in st.session_state['data_store'].items()}
+            backup = {'textbooks': st.session_state['textbooks'], 'data_store': safe_ds, 'category_map': safe_cat}
+            code = compress_data_to_code(backup)
+            if code:
+                st.download_button("💾 ファイル保存", code, f"niigata_bk_{today}.txt", "text/plain", type="primary")
+                with st.expander("コード表示"): st.code(code)
     with sync_tab2:
-        st.write("保存したファイルをアップロード、またはコードを貼り付けます。")
-        uploaded_backup = st.file_uploader("📂 ファイルをアップロード", type=['txt'])
-        input_code = st.text_area("またはコードを貼り付け:", height=100)
-        
-        if st.button("復元を実行"):
-            target_code = None
-            if uploaded_backup is not None:
-                target_code = uploaded_backup.read().decode("utf-8")
-            elif input_code:
-                target_code = input_code.strip()
-            
-            if target_code:
-                restored_data = decompress_code_to_data(target_code)
-                if restored_data:
-                    try:
-                        if 'textbooks' in restored_data: st.session_state['textbooks'] = restored_data['textbooks']
-                        
-                        if 'data_store' in restored_data:
-                            st.session_state['data_store'] = {}
-                            for name, df_json in restored_data['data_store'].items():
-                                st.session_state['data_store'][name] = pd.read_json(df_json, orient='split')
-                        
-                        if 'category_map' in restored_data:
-                            st.session_state['category_map'] = {}
-                            for k, v in restored_data['category_map'].items():
-                                if ':' in k:
-                                    s, t = k.split(':', 1)
-                                    st.session_state['category_map'][(s, t)] = v
-                                else:
-                                    st.session_state['category_map'][(k, k)] = v
-                        
-                        st.session_state['clean_df'] = pd.DataFrame() 
-                        st.success("✅ 復元完了！画面を更新します。")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"復元処理中にエラー: {e}")
-                else:
-                    st.error("ファイルが壊れているか、コードが間違っています。")
-            else:
-                st.warning("ファイルを選択するか、コードを貼り付けてください。")
-
-    st.markdown("---")
-    st.subheader("📚 登録済み参考書")
-    if st.session_state['textbooks']:
-        for subj, book in list(st.session_state['textbooks'].items()):
-            if book:
-                c1, c2 = st.columns([0.8, 0.2])
-                c1.write(f"**{subj}**: {book}")
-                if c2.button("🗑️", key=f"del_book_{subj}"):
-                    del st.session_state['textbooks'][subj]
+        up_file = st.file_uploader("ファイル", type=['txt'])
+        up_text = st.text_area("コード")
+        if st.button("復元"):
+            target = up_file.read().decode() if up_file else up_text.strip()
+            data = decompress_code_to_data(target)
+            if data:
+                try:
+                    st.session_state['textbooks'] = data.get('textbooks', {})
+                    st.session_state['category_map'] = {(k.split(':',1)[0], k.split(':',1)[1]) if ':' in k else (k,k): v for k, v in data.get('category_map', {}).items()}
+                    st.session_state['data_store'] = {n: pd.read_json(j, orient='split') for n, j in data.get('data_store', {}).items()}
+                    st.session_state['clean_df'] = pd.DataFrame()
                     st.rerun()
+                except: st.error("復元失敗")
     
-    with st.expander("追加・編集"):
-        with st.form("textbook_form"):
-            tb_math = st.text_input("数学", value=st.session_state['textbooks'].get('数学', ''))
-            tb_eng = st.text_input("英語", value=st.session_state['textbooks'].get('英語', ''))
-            tb_sci = st.text_input("理科", value=st.session_state['textbooks'].get('理科', ''))
-            tb_soc = st.text_input("社会", value=st.session_state['textbooks'].get('社会', ''))
-            tb_jpn = st.text_input("国語", value=st.session_state['textbooks'].get('国語', ''))
+    st.divider()
+    st.subheader("📚 参考書")
+    for s, b in st.session_state['textbooks'].items():
+        c1,c2=st.columns([8,2])
+        c1.write(f"**{s}**: {b}"); 
+        if c2.button("🗑️", key=f"d_{s}"): del st.session_state['textbooks'][s]; st.rerun()
+    with st.expander("編集"):
+        with st.form("tb"):
+            tm=st.text_input("数学", st.session_state['textbooks'].get('数学',''))
+            te=st.text_input("英語", st.session_state['textbooks'].get('英語',''))
+            ts=st.text_input("理科", st.session_state['textbooks'].get('理科',''))
+            tc=st.text_input("社会", st.session_state['textbooks'].get('社会',''))
+            tj=st.text_input("国語", st.session_state['textbooks'].get('国語',''))
             if st.form_submit_button("保存"):
-                st.session_state['textbooks'] = {'数学': tb_math, '英語': tb_eng, '理科': tb_sci, '社会': tb_soc, '国語': tb_jpn}
+                st.session_state['textbooks']={'数学':tm,'英語':te,'理科':ts,'社会':tc,'国語':tj}
                 st.rerun()
-
-    st.markdown("---")
-    st.subheader("💾 登録済みファイル")
-    if st.session_state['data_store']:
-        for file_name in list(st.session_state['data_store'].keys()):
-            c1, c2 = st.columns([0.85, 0.15])
-            c1.text(file_name)
-            if c2.button("🗑️", key=f"del_file_{file_name}"):
-                del st.session_state['data_store'][file_name]
-                st.session_state['clean_df'] = pd.DataFrame()
-                st.rerun()
-        
-        if st.button("🚨 全データを削除", type="primary"):
-            st.session_state['data_store'] = {}
-            st.session_state['clean_df'] = pd.DataFrame()
-            st.session_state['category_map'] = {}
-            st.rerun()
-    else:
-        st.info("ファイルなし")
+    
+    st.divider()
+    if st.button("🚨 全データ削除"):
+        st.session_state['data_store']={}; st.session_state['clean_df']=pd.DataFrame(); st.session_state['practice_q']=None
+        st.rerun()
 
 # ---------------------------------------------------------
 # 📂 メイン画面
 # ---------------------------------------------------------
 st.markdown("### 1️⃣ データのアップロード & 解析")
 col_up, col_btn = st.columns([3, 1])
-
 with col_up:
     uploaded_files = st.file_uploader("CSVファイル", accept_multiple_files=True, type=['csv'], label_visibility="collapsed")
-
 with col_btn:
-    if st.button("🚀 AI解析を実行", type="primary", use_container_width=True):
+    if st.button("🚀 AI解析", type="primary", use_container_width=True):
         if uploaded_files:
-            new_count = 0
             for file in uploaded_files:
                 df = parse_csv(file)
-                if df is not None:
-                    st.session_state['data_store'][file.name] = df
-                    new_count += 1
-            if new_count > 0:
-                process_and_categorize()
-            else:
-                st.warning("有効なCSVがありません")
-        elif st.session_state['data_store']:
+                if df is not None: st.session_state['data_store'][file.name] = df
             process_and_categorize()
-        else:
-            st.warning("ファイルを選択してください")
+        elif st.session_state['data_store']: process_and_categorize()
+        else: st.warning("ファイルを選択してください")
 
 if not st.session_state['clean_df'].empty:
     df_show = st.session_state['clean_df']
     st.markdown("---")
     
-    # 計画タブを削除
-    tab1, tab2, tab3 = st.tabs(["📊 全体分析", "📖 復習＆テスト", "📷 画像採点"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 全体分析", "📖 復習＆テスト", "📷 画像採点", "🧩 その他特訓"])
 
+    # ------------------
+    # TAB 1: 分析
+    # ------------------
     with tab1:
-        # データ集計
         summary = df_show.groupby(['教科', '内容'])[['点数', '配点']].sum().reset_index()
         summary['得点率(%)'] = (summary['点数'] / summary['配点'] * 100).fillna(0).round(1)
-        
-        # 判定カラムの追加 (🔴/🟡/🟢)
         summary['判定'] = summary['得点率(%)'].apply(get_status_emoji)
         
-        # 表示用データの整理
-        summary_clean = summary[['教科', '内容', '判定', '得点率(%)']].copy()
-
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.subheader("⚠️ 全体：優先復習単元")
-            st.dataframe(
-                summary_clean.sort_values('得点率(%)').head(10), 
-                column_config={
-                    "得点率(%)": st.column_config.ProgressColumn(
-                        "得点率", 
-                        format="%.1f%%", 
-                        min_value=0, 
-                        max_value=100
-                    ),
-                    "判定": st.column_config.TextColumn("状態", width="small")
-                },
-                use_container_width=True, 
-                hide_index=True
-            )
-        with col2:
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.subheader("⚠️ 優先復習単元")
+            st.dataframe(summary.sort_values('得点率(%)').head(10)[['教科','内容','判定','得点率(%)']], use_container_width=True, hide_index=True)
+        with c2:
             st.subheader("教科別平均")
             sub_sum = df_show.groupby('教科')[['点数', '配点']].sum().reset_index()
             sub_sum['得点率(%)'] = (sub_sum['点数']/sub_sum['配点']*100).fillna(0).round(1)
-            st.dataframe(
-                sub_sum[['教科', '得点率(%)']], 
-                column_config={
-                    "得点率(%)": st.column_config.ProgressColumn(
-                        "平均点率",
-                        format="%.1f%%",
-                        min_value=0,
-                        max_value=100
-                    )
-                },
-                hide_index=True
-            )
-            
-        st.markdown("---")
-        st.subheader("📚 教科ごとの弱点")
-        subjects = df_show['教科'].unique()
-        cols = st.columns(len(subjects)) if len(subjects) > 0 else [st.container()]
-        
-        for i, sub in enumerate(subjects):
-            with cols[i]:
-                st.markdown(f"**{sub}**")
-                sub_df = summary_clean[summary_clean['教科'] == sub].sort_values('得点率(%)').head(5)
-                if not sub_df.empty:
-                    st.dataframe(
-                        sub_df[['内容', '判定', '得点率(%)']], 
-                        column_config={
-                            "得点率(%)": st.column_config.ProgressColumn(
-                                format="%.0f%%", min_value=0, max_value=100
-                            ),
-                            "判定": st.column_config.TextColumn(width="small")
-                        },
-                        use_container_width=True, 
-                        hide_index=True
-                    )
-                else: st.caption("データなし")
+            st.dataframe(sub_sum[['教科','得点率(%)']], use_container_width=True, hide_index=True)
 
+    # ------------------
+    # TAB 2: 復習
+    # ------------------
     with tab2:
-        st.subheader("AI家庭教師による指導（反省活用版）")
-        
-        # データ準備
+        st.subheader("AI家庭教師")
         summary_t2 = df_show.groupby(['教科', '内容'])[['点数', '配点']].sum().reset_index()
-        summary_t2['得点率(%)'] = (summary_t2['点数'] / summary_t2['配点'] * 100).fillna(0).round(1)
-
-        c1, c2 = st.columns(2)
-        with c1: 
-            sel_sub = st.selectbox("教科", summary_t2['教科'].unique())
+        summary_t2['得点率(%)'] = (summary_t2['点数']/summary_t2['配点']*100).fillna(0).round(1)
         
-        with c2:
-            sub_topics = summary_t2[summary_t2['教科']==sel_sub].sort_values('得点率(%)')
-            
-            topic_map = {}
-            for _, row in sub_topics.iterrows():
-                icon = get_status_emoji(row['得点率(%)'])
-                display_name = f"{icon} {row['内容']} ({row['得点率(%)']}%)"
-                topic_map[display_name] = row['内容']
-            
-            sel_top_display = st.selectbox("単元 (🔴苦手 / 🟡注意 / 🟢定着)", options=list(topic_map.keys()))
-            sel_top = topic_map[sel_top_display]
+        c1, c2 = st.columns(2)
+        sel_sub = c1.selectbox("教科", summary_t2['教科'].unique())
+        
+        sub_topics = summary_t2[summary_t2['教科']==sel_sub].sort_values('得点率(%)')
+        topic_map = {f"{get_status_emoji(row['得点率(%)'])} {row['内容']} ({row['得点率(%)']}%)": row['内容'] for _, row in sub_topics.iterrows()}
+        sel_top_d = c2.selectbox("単元", list(topic_map.keys()))
+        sel_top = topic_map[sel_top_d]
         
         target_rows = df_show[(df_show['教科']==sel_sub) & (df_show['内容']==sel_top)]
         rate = (target_rows['点数'].sum() / target_rows['配点'].sum() * 100).round(1)
-        original_topics = target_rows['詳細'].unique().tolist()
-        original_topics_str = "、".join([str(t) for t in original_topics])
+        reflections = [str(r) for r in target_rows['反省'].unique() if r and r!="nan"]
+        ref_text = "\n".join([f"- {r}" for r in reflections]) if reflections else "特になし"
         
-        # 反省テキストの抽出
-        reflections = []
-        if '反省' in target_rows.columns:
-            raw_reflections = target_rows['反省'].dropna().unique().tolist()
-            # 空文字やnanを除外
-            reflections = [str(r) for r in raw_reflections if str(r).strip() != "" and str(r).lower() != "nan"]
+        st.info(f"得点率: {rate}%")
+        if reflections: st.info(f"📝 反省メモ:\n{ref_text}")
         
-        st.info(f"選択単元: **{sel_top}** (得点率: {rate}%)")
-        st.caption(f"詳細: {original_topics_str}")
-        
-        # 反省の表示
-        if reflections:
-            st.markdown("📝 **あなたの反省メモ**")
-            for r in reflections:
-                st.markdown(f'<div class="reflection-box">💡 {r}</div>', unsafe_allow_html=True)
-            reflection_text = "、".join(reflections)
-        else:
-            reflection_text = "特になし"
-            st.caption("※この単元に関する反省メモはありません。")
-
-        book = st.session_state['textbooks'].get(sel_sub, "参考書")
-        
-        if st.button("① 復習ポイントを聞く"):
-            with st.status(f"🤖 AI({MODEL_NAME_PRO})が思考中...", expanded=True) as status:
-                st.write("1. 弱点と反省を分析中...")
-                # 反省を含めたプロンプトを作成
-                p = f"""
-                新潟高校志望の受験生です。
-                教科: {sel_sub}
-                苦手カテゴリ: {sel_top}
-                詳細単元: {original_topics_str}
-                得点率: {rate}%
-                使用参考書: {book}
-                
-                【本人の反省・ミスの原因】
-                {reflection_text}
-                
-                上記を踏まえ、一般論ではなく私のミスの傾向に合わせた「具体的な復習ポイント」と「確認すべきチェック項目3つ」を教えてください。
-                """
-                res = ask_gemini_robust(p, use_flash=False)
-                st.session_state['guide'] = res
-                status.update(label="✅ 完了！", state="complete", expanded=False)
+        if st.button("① アドバイスを聞く"):
+            prompt = f"新潟高校志望。{sel_sub}の「{sel_top}」について、得点率{rate}%。反省:{ref_text}。具体的な復習法とチェック項目を教えて。"
+            st.session_state['guide'] = ask_gemini_robust(prompt)
         
         if 'guide' in st.session_state:
             st.markdown(st.session_state['guide'])
-            if st.button("② 確認テストを作成"):
-                with st.status("📝 問題作成中...", expanded=True) as status:
-                    p2 = f"""
-                    新潟高校入試レベルの問題作成依頼。
-                    単元: {sel_sub}の「{sel_top}」（詳細: {original_topics_str}）
-                    
-                    【考慮すべき本人の弱点】
-                    {reflection_text}
-                    
-                    上記弱点を克服するための、実践問題1問を作成してください。解答と解説も付けてください。
-                    """
-                    res = ask_gemini_robust(p2, use_flash=False)
-                    st.session_state['test'] = res
-                    status.update(label="✅ 完了！", state="complete", expanded=False)
+            if st.button("② 確認テスト作成"):
+                prompt = f"新潟高校入試レベル。{sel_sub}「{sel_top}」の実践問題1問。反省「{ref_text}」を踏まえて作成せよ。解答解説付き。"
+                st.session_state['test'] = ask_gemini_robust(prompt)
         
         if 'test' in st.session_state:
             st.markdown("---")
             st.markdown(st.session_state['test'])
 
+    # ------------------
+    # TAB 3: 画像採点
+    # ------------------
     with tab3:
-        st.subheader("📷 画像採点＆指導")
-        col_img1, col_img2, col_img3 = st.columns(3)
-        with col_img1: img_prob = st.file_uploader("① 問題画像", type=['png', 'jpg', 'jpeg'])
-        with col_img2: img_user = st.file_uploader("② 解答画像", type=['png', 'jpg', 'jpeg'])
-        with col_img3: img_ans = st.file_uploader("③ 模範解答画像", type=['png', 'jpg', 'jpeg'])
+        st.subheader("📷 自由画像採点")
+        c1,c2,c3 = st.columns(3)
+        img_p = c1.file_uploader("問題", type=['jpg','png'])
+        img_u = c2.file_uploader("解答", type=['jpg','png'])
+        img_a = c3.file_uploader("正解", type=['jpg','png'])
+        if img_p and img_u and img_a and st.button("採点開始"):
+            with st.spinner("採点中..."):
+                imgs = [PIL.Image.open(i) for i in [img_p, img_u, img_a]]
+                res = ask_gemini_robust("厳密に採点し、添削とアドバイスを行ってください。", imgs)
+                st.markdown(res)
+
+    # ------------------
+    # TAB 4: その他特訓
+    # ------------------
+    with tab4:
+        st.subheader("🧩 その他特訓（ランダム出題）")
+        st.caption("公立高校入試レベルの問題をランダムに出題します。解答を紙に書いて撮影してください。")
         
-        if img_prob and img_user and img_ans:
-            if st.button(f"🚀 採点実行 ({MODEL_NAME_PRO})"):
-                with st.status("👀 解析中...", expanded=True) as status:
-                    images = [PIL.Image.open(img_prob), PIL.Image.open(img_user), PIL.Image.open(img_ans)]
-                    prompt_v = "新潟高校志望。3枚の画像から、厳密な採点、添削、弱点分析、類題の提示を行ってください。"
-                    res = ask_gemini_robust(prompt_v, images)
-                    st.markdown(res)
-                    status.update(label="✅ 完了！", state="complete", expanded=False)
+        train_menu = st.radio("メニューを選択", ["理科記述", "社会記述", "漢字", "リスニング", "証明問題"], horizontal=True)
+        
+        if st.button("🎲 問題を作成する"):
+            st.session_state['practice_a'] = None # 解答クリア
+            st.session_state['practice_script'] = None
+            
+            with st.spinner("AIが出題中..."):
+                if train_menu == "リスニング":
+                    # リスニング用の特別なプロンプト
+                    p_lis = """
+                    公立高校入試レベルの英語リスニング問題を作成してください。
+                    出力フォーマット:
+                    【スクリプト】
+                    (ここに読み上げ用の英文のみを書く)
+                    【設問】
+                    (ここに設問文と選択肢などを書く)
+                    【正解】
+                    (ここに正解と解説を書く)
+                    """
+                    res = ask_gemini_robust(p_lis)
+                    st.session_state['practice_q'] = res # 生データ保持
+                    
+                    # スクリプト抽出
+                    try:
+                        parts = res.split("【設問】")
+                        script_part = parts[0].replace("【スクリプト】", "").strip()
+                        question_part = "【設問】" + parts[1] if len(parts) > 1 else res
+                        
+                        st.session_state['practice_script'] = script_part
+                        st.session_state['practice_q_display'] = question_part
+                    except:
+                        st.session_state['practice_q_display'] = res
+                
+                else:
+                    # その他の科目
+                    p_normal = f"""
+                    公立高校入試レベルの「{train_menu}」の問題を1問作成してください。
+                    新潟高校志望の生徒向けです。
+                    
+                    出力形式:
+                    【問題】
+                    (問題文のみを表示)
+                    
+                    【正解と解説】
+                    (模範解答と解説、採点基準)
+                    """
+                    res = ask_gemini_robust(p_normal)
+                    st.session_state['practice_q'] = res
+                    # 表示用に分割（正解は隠す）
+                    if "【正解と解説】" in res:
+                        st.session_state['practice_q_display'] = res.split("【正解と解説】")[0]
+                    else:
+                        st.session_state['practice_q_display'] = res
+
+        # 問題表示エリア
+        if st.session_state['practice_q']:
+            st.markdown("---")
+            st.markdown("#### 📝 問題")
+            
+            # リスニングの場合の音声プレイヤー
+            if train_menu == "リスニング" and st.session_state['practice_script']:
+                if gTTS is None:
+                    st.error("⚠️ `gTTS` ライブラリがインストールされていません。")
+                else:
+                    st.write("🔈 **音声を再生して解答してください**")
+                    audio_data = text_to_speech(st.session_state['practice_script'])
+                    if audio_data:
+                        st.audio(audio_data, format='audio/mp3')
+            
+            st.markdown(st.session_state.get('practice_q_display', ''))
+            
+            st.markdown("---")
+            st.write("📷 **解答をアップロードして採点**")
+            user_ans_img = st.file_uploader("解答の写真をアップロード", type=['jpg', 'png', 'jpeg'], key="practice_up")
+            
+            if user_ans_img and st.button("💯 採点・フィードバック"):
+                with st.spinner("AI先生が採点中..."):
+                    # 全体の情報（正解含む）とユーザー画像を渡す
+                    prompt_check = f"""
+                    以下の問題データに基づき、生徒の解答画像を採点してください。
+                    
+                    【問題データ（正解含む）】
+                    {st.session_state['practice_q']}
+                    
+                    採点結果、添削、改善アドバイスをわかりやすく出力してください。
+                    """
+                    img = PIL.Image.open(user_ans_img)
+                    res_check = ask_gemini_robust(prompt_check, [img])
+                    st.session_state['practice_a'] = res_check
+            
+            if st.session_state['practice_a']:
+                st.success("✅ 採点完了！")
+                st.markdown(st.session_state['practice_a'])
+                
+                # 正解データの表示（トグル）
+                with st.expander("模範解答を表示する"):
+                    st.markdown(st.session_state['practice_q'])
+
 else:
-    st.info("👆 上記からCSVをアップロードし、「AI解析を実行」ボタンを押してください。")
+    st.info("👆 サイドバーからCSVを読み込むか、ファイルをアップロードしてください。")
