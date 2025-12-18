@@ -9,6 +9,7 @@ import time
 import io
 import gzip
 import base64
+import random  # ランダム出題用に必要
 
 # 音声生成用ライブラリ
 try:
@@ -100,11 +101,19 @@ st.markdown(f"""
         font-size: 0.9em;
     }}
     
-    /* クイズ選択肢のスタイル */
     .stRadio > div {{
         background-color: #f8f9fa;
         padding: 10px;
         border-radius: 10px;
+    }}
+    
+    /* 緊急復習エリアのスタイル */
+    .urgent-box {{
+        border: 2px solid #dc3545;
+        background-color: #fff8f8;
+        padding: 15px;
+        border-radius: 10px;
+        margin-bottom: 20px;
     }}
 </style>
 
@@ -175,9 +184,8 @@ if 'clean_df' not in st.session_state: st.session_state['clean_df'] = pd.DataFra
 if 'category_map' not in st.session_state: st.session_state['category_map'] = {}
 if 'textbooks' not in st.session_state: st.session_state['textbooks'] = {}
 
-# 特訓モード用セッション変数
+# 特訓モード用
 if 'practice_data' not in st.session_state: st.session_state['practice_data'] = {} 
-# practice_data = {'script': str, 'question': str, 'options': list, 'answer': str, 'explanation': str}
 
 def compress_data_to_code(data_dict):
     try:
@@ -220,10 +228,8 @@ def ask_gemini_robust(prompt, image_list=None, use_flash=False):
     return "❌ 応答できませんでした。"
 
 def text_to_speech(text, lang='en'):
-    """gTTSで音声を生成"""
     if gTTS is None: return None
     try:
-        # 話者名を少し間を空けるためにカンマなどに置換する小細工
         processed_text = text.replace("A:", " ").replace("B:", " ").replace("M:", " ").replace("W:", " ")
         tts = gTTS(text=processed_text, lang=lang)
         fp = io.BytesIO()
@@ -395,13 +401,37 @@ if not st.session_state['clean_df'].empty:
     # TAB 1: 分析
     # ------------------
     with tab1:
+        # 集計
         summary = df_show.groupby(['教科', '内容'])[['点数', '配点']].sum().reset_index()
         summary['得点率(%)'] = (summary['点数'] / summary['配点'] * 100).fillna(0).round(1)
         summary['判定'] = summary['得点率(%)'].apply(get_status_emoji)
         
+        # 🚨 緊急復習リスト抽出ロジック
+        urgent_list = []
+        for subj in summary['教科'].unique():
+            limit = 5 if subj in ['理科', '社会'] else 2
+            # 得点率が低い順に取得
+            worst = summary[summary['教科'] == subj].sort_values('得点率(%)').head(limit)
+            if not worst.empty:
+                urgent_list.append(worst)
+        
+        if urgent_list:
+            urgent_df = pd.concat(urgent_list)
+            st.markdown('<div class="urgent-box">', unsafe_allow_html=True)
+            st.subheader("🚨 教科別：早急に復習すべき単元")
+            st.caption("理科・社会はワースト5、その他はワースト2を表示しています。")
+            st.dataframe(
+                urgent_df[['教科', '内容', '得点率(%)', '判定']],
+                column_config={
+                    "得点率(%)": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100)
+                },
+                use_container_width=True, hide_index=True
+            )
+            st.markdown('</div>', unsafe_allow_html=True)
+
         c1, c2 = st.columns([2, 1])
         with c1:
-            st.subheader("⚠️ 優先復習単元")
+            st.subheader("全教科ワーストランキング")
             st.dataframe(summary.sort_values('得点率(%)').head(10)[['教科','内容','判定','得点率(%)']], use_container_width=True, hide_index=True)
         with c2:
             st.subheader("教科別平均")
@@ -452,14 +482,23 @@ if not st.session_state['clean_df'].empty:
     # ------------------
     with tab3:
         st.subheader("📷 自由画像採点")
+        st.caption("正解画像は無くてもOKです。その場合AIが問題を解いて採点します。")
         c1,c2,c3 = st.columns(3)
         img_p = c1.file_uploader("問題", type=['jpg','png'])
         img_u = c2.file_uploader("解答", type=['jpg','png'])
-        img_a = c3.file_uploader("正解", type=['jpg','png'])
-        if img_p and img_u and img_a and st.button("採点開始"):
-            with st.spinner("採点中..."):
-                imgs = [PIL.Image.open(i) for i in [img_p, img_u, img_a]]
-                res = ask_gemini_robust("厳密に採点し、添削とアドバイスを行ってください。", imgs)
+        img_a = c3.file_uploader("正解 (任意)", type=['jpg','png'])
+        
+        if img_p and img_u and st.button("採点開始"):
+            with st.spinner("AI先生が目で見て採点中..."):
+                imgs = [PIL.Image.open(img_p), PIL.Image.open(img_u)]
+                prompt_v = "新潟高校志望の生徒の答案採点依頼。"
+                if img_a:
+                    imgs.append(PIL.Image.open(img_a))
+                    prompt_v += "3枚目の画像は正解・解説です。これを基準に厳密に採点・添削してください。"
+                else:
+                    prompt_v += "正解画像がありません。1枚目の問題画像をあなたが解き、その正解に基づいて2枚目の生徒の解答を採点・添削してください。"
+                
+                res = ask_gemini_robust(prompt_v, imgs)
                 st.markdown(res)
 
     # ------------------
@@ -474,7 +513,6 @@ if not st.session_state['clean_df'].empty:
         if st.button("🎲 問題を作成する"):
             # データリセット
             st.session_state['practice_data'] = {}
-            st.session_state['user_answer_idx'] = None
 
             with st.spinner("AIが出題中..."):
                 if train_menu == "リスニング":
@@ -495,7 +533,6 @@ if not st.session_state['clean_df'].empty:
                     res = ask_gemini_robust(p_lis)
                     
                     try:
-                        # JSON抽出
                         json_match = re.search(r'\{.*\}', res, re.DOTALL)
                         if json_match:
                             data = json.loads(json_match.group())
@@ -507,15 +544,20 @@ if not st.session_state['clean_df'].empty:
                                 'explanation': data.get('explanation'),
                                 'type': 'listening'
                             }
-                        else:
-                            st.error("データの作成に失敗しました。もう一度押してください。")
-                    except:
-                        st.error("エラーが発生しました。もう一度押してください。")
+                        else: st.error("データ作成失敗")
+                    except: st.error("エラー発生")
                 
                 else:
-                    # 通常問題用プロンプト
+                    # 通常問題用
+                    sub_genre = ""
+                    if train_menu == "証明問題":
+                        sub_genre = random.choice(["合同の証明", "相似の証明", "整数の性質の証明"])
+                        target_menu_name = f"数学の{sub_genre}"
+                    else:
+                        target_menu_name = train_menu
+
                     p_normal = f"""
-                    公立高校入試レベルの「{train_menu}」の問題を1問作成してください。
+                    公立高校入試レベルの「{target_menu_name}」の問題を1問作成してください。
                     
                     【厳守フォーマット】
                     ===QUESTION===
@@ -534,7 +576,8 @@ if not st.session_state['clean_df'].empty:
                     st.session_state['practice_data'] = {
                         'question': question,
                         'answer': answer,
-                        'type': 'normal'
+                        'type': 'normal',
+                        'sub_genre': sub_genre # 証明の場合のジャンル名保持用
                     }
 
         # --- 表示エリア ---
@@ -542,33 +585,28 @@ if not st.session_state['clean_df'].empty:
         
         if p_data:
             st.markdown("---")
-            
+            if p_data.get('sub_genre'):
+                st.caption(f"出題ジャンル: {p_data['sub_genre']}")
+
             # === リスニング形式 ===
             if p_data.get('type') == 'listening':
                 st.write("🔈 **リスニング音声**")
                 if gTTS is None:
                     st.error("⚠️ `gTTS` ライブラリがありません。")
                 else:
-                    # スクリプトを読み上げ
                     audio_data = text_to_speech(p_data['script'])
-                    if audio_data:
-                        st.audio(audio_data, format='audio/mp3')
+                    if audio_data: st.audio(audio_data, format='audio/mp3')
 
                 st.markdown("#### 📝 問題")
                 st.markdown(p_data.get('question', ''))
                 
-                # 選択肢ボタン
                 options = p_data.get('options', [])
                 if options:
                     user_sel = st.radio("解答を選択:", options, key="lis_radio")
-                    
                     if st.button("回答する"):
                         st.markdown("---")
-                        if user_sel == p_data.get('answer'):
-                            st.success(f"🙆‍♂️ 正解！ ({user_sel})")
-                        else:
-                            st.error(f"🙅‍♂️ 不正解... 正解は「{p_data.get('answer')}」です。")
-                        
+                        if user_sel == p_data.get('answer'): st.success(f"🙆‍♂️ 正解！ ({user_sel})")
+                        else: st.error(f"🙅‍♂️ 不正解... 正解は「{p_data.get('answer')}」です。")
                         st.markdown("### 解説")
                         st.markdown(p_data.get('explanation'))
                         st.markdown("**スクリプト:**")
