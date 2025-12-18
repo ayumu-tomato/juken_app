@@ -9,7 +9,7 @@ import time
 import io
 import gzip
 import base64
-import random  # ランダム出題用に必要
+import random
 
 # 音声生成用ライブラリ
 try:
@@ -464,13 +464,35 @@ if not st.session_state['clean_df'].empty:
         if reflections: st.info(f"📝 反省メモ:\n{ref_text}")
         
         if st.button("① アドバイスを聞く"):
-            prompt = f"新潟高校志望。{sel_sub}の「{sel_top}」について、得点率{rate}%。反省:{ref_text}。具体的な復習法とチェック項目を教えて。"
+            # プロンプト修正: 大局7割、反省3割
+            prompt = f"""
+            新潟高校志望の受験生への指導。
+            
+            対象単元: {sel_sub}の「{sel_top}」
+            得点率: {rate}%
+            本人の反省メモ: {ref_text}
+            
+            【回答の構成比率】
+            ・全体の70%：この単元「{sel_top}」における新潟高校入試を見据えた重要ポイント、頻出パターン、大局的な学習指針。
+            ・全体の30%：本人の反省メモに基づいた具体的な改善アドバイス。
+            
+            上記バランスを意識して、具体的な復習法とチェック項目3つを教えてください。
+            """
             st.session_state['guide'] = ask_gemini_robust(prompt)
         
         if 'guide' in st.session_state:
             st.markdown(st.session_state['guide'])
             if st.button("② 確認テスト作成"):
-                prompt = f"新潟高校入試レベル。{sel_sub}「{sel_top}」の実践問題1問。反省「{ref_text}」を踏まえて作成せよ。解答解説付き。"
+                # プロンプト修正: 単元の本質的な問題を重視
+                prompt = f"""
+                新潟高校入試レベルの実践問題作成。
+                単元: {sel_sub}の「{sel_top}」
+                
+                【作成指針】
+                1. 反省メモ（{ref_text}）の内容だけに偏らず、この単元の本質的な理解を問う良問を作成してください。
+                2. ただし、解説の中で反省点にも触れ、なぜ間違えやすいのかを補足してください。
+                3. 解答・解説付き。
+                """
                 st.session_state['test'] = ask_gemini_robust(prompt)
         
         if 'test' in st.session_state:
