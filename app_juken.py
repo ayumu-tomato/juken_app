@@ -9,6 +9,7 @@ import time
 import io
 import gzip
 import base64
+
 # 音声生成用ライブラリ
 try:
     from gtts import gTTS
@@ -38,7 +39,6 @@ st.markdown(f"""
     }}
     .stApp {{ background-color: #f4f7f6; }}
 
-    /* 固定カウントダウン */
     .fixed-countdown {{
         position: fixed;
         top: 0;
@@ -59,7 +59,6 @@ st.markdown(f"""
         .count-number {{ font-size: 16px; }}
     }}
 
-    /* カードデザイン */
     div[data-testid="stVerticalBlock"] > div:has(div.stDataFrame), 
     div[data-testid="stVerticalBlock"] > div:has(div.stMarkdown) {{
         background-color: white;
@@ -92,7 +91,6 @@ st.markdown(f"""
     .stButton > button:active {{ transform: scale(0.98); }}
     button[kind="primary"] {{ background-color: #007bff !important; color: white !important; }}
     
-    /* 反省コメント */
     .reflection-box {{
         background-color: #fff3cd;
         border-left: 5px solid #ffc107;
@@ -100,6 +98,13 @@ st.markdown(f"""
         border-radius: 5px;
         margin-bottom: 15px;
         font-size: 0.9em;
+    }}
+    
+    /* クイズ選択肢のスタイル */
+    .stRadio > div {{
+        background-color: #f8f9fa;
+        padding: 10px;
+        border-radius: 10px;
     }}
 </style>
 
@@ -169,10 +174,10 @@ if 'data_store' not in st.session_state: st.session_state['data_store'] = {}
 if 'clean_df' not in st.session_state: st.session_state['clean_df'] = pd.DataFrame()
 if 'category_map' not in st.session_state: st.session_state['category_map'] = {}
 if 'textbooks' not in st.session_state: st.session_state['textbooks'] = {}
-# 特訓モード用セッション
-if 'practice_q' not in st.session_state: st.session_state['practice_q'] = None
-if 'practice_a' not in st.session_state: st.session_state['practice_a'] = None
-if 'practice_script' not in st.session_state: st.session_state['practice_script'] = None
+
+# 特訓モード用セッション変数
+if 'practice_data' not in st.session_state: st.session_state['practice_data'] = {} 
+# practice_data = {'script': str, 'question': str, 'options': list, 'answer': str, 'explanation': str}
 
 def compress_data_to_code(data_dict):
     try:
@@ -218,7 +223,9 @@ def text_to_speech(text, lang='en'):
     """gTTSで音声を生成"""
     if gTTS is None: return None
     try:
-        tts = gTTS(text=text, lang=lang)
+        # 話者名を少し間を空けるためにカンマなどに置換する小細工
+        processed_text = text.replace("A:", " ").replace("B:", " ").replace("M:", " ").replace("W:", " ")
+        tts = gTTS(text=processed_text, lang=lang)
         fp = io.BytesIO()
         tts.write_to_fp(fp)
         fp.seek(0)
@@ -254,7 +261,6 @@ def parse_csv(file):
             subset['点数'] = pd.to_numeric(subset['点数'], errors='coerce').fillna(0)
             subset['配点'] = pd.to_numeric(subset['配点'], errors='coerce').fillna(0)
             subset['ファイル名'] = str(file.name)
-            # 教科判定
             name_str = str(file.name)
             subj = 'その他'
             for s in ['数学','英語','理科','社会','国語']:
@@ -359,7 +365,7 @@ with st.sidebar:
     
     st.divider()
     if st.button("🚨 全データ削除"):
-        st.session_state['data_store']={}; st.session_state['clean_df']=pd.DataFrame(); st.session_state['practice_q']=None
+        st.session_state['data_store']={}; st.session_state['clean_df']=pd.DataFrame(); st.session_state['practice_data']={}
         st.rerun()
 
 # ---------------------------------------------------------
@@ -461,105 +467,143 @@ if not st.session_state['clean_df'].empty:
     # ------------------
     with tab4:
         st.subheader("🧩 その他特訓（ランダム出題）")
-        st.caption("公立高校入試レベルの問題をランダムに出題します。解答を紙に書いて撮影してください。")
+        st.caption("公立高校入試レベルの問題をランダムに出題します。")
         
         train_menu = st.radio("メニューを選択", ["理科記述", "社会記述", "漢字", "リスニング", "証明問題"], horizontal=True)
         
         if st.button("🎲 問題を作成する"):
-            st.session_state['practice_a'] = None # 解答クリア
-            st.session_state['practice_script'] = None
-            
+            # データリセット
+            st.session_state['practice_data'] = {}
+            st.session_state['user_answer_idx'] = None
+
             with st.spinner("AIが出題中..."):
                 if train_menu == "リスニング":
-                    # リスニング用の特別なプロンプト
+                    # リスニング用プロンプト (JSON出力)
                     p_lis = """
-                    公立高校入試レベルの英語リスニング問題を作成してください。
-                    出力フォーマット:
-                    【スクリプト】
-                    (ここに読み上げ用の英文のみを書く)
-                    【設問】
-                    (ここに設問文と選択肢などを書く)
-                    【正解】
-                    (ここに正解と解説を書く)
-                    """
-                    res = ask_gemini_robust(p_lis)
-                    st.session_state['practice_q'] = res # 生データ保持
-                    
-                    # スクリプト抽出
-                    try:
-                        parts = res.split("【設問】")
-                        script_part = parts[0].replace("【スクリプト】", "").strip()
-                        question_part = "【設問】" + parts[1] if len(parts) > 1 else res
-                        
-                        st.session_state['practice_script'] = script_part
-                        st.session_state['practice_q_display'] = question_part
-                    except:
-                        st.session_state['practice_q_display'] = res
-                
-                else:
-                    # その他の科目
-                    p_normal = f"""
-                    公立高校入試レベルの「{train_menu}」の問題を1問作成してください。
+                    公立高校入試レベルの英語リスニング問題を1問作成してください。
                     新潟高校志望の生徒向けです。
                     
-                    出力形式:
-                    【問題】
-                    (問題文のみを表示)
+                    【厳守】以下のJSON形式のみを出力してください。Markdownのコードブロックは不要です。
+                    {
+                        "script": "英語のスクリプトのみ(A: ... B: ...)",
+                        "question": "問題文(日本語)",
+                        "options": ["選択肢1", "選択肢2", "選択肢3", "選択肢4"],
+                        "answer": "正解の選択肢文字列",
+                        "explanation": "日本語訳と解説"
+                    }
+                    """
+                    res = ask_gemini_robust(p_lis)
                     
-                    【正解と解説】
-                    (模範解答と解説、採点基準)
+                    try:
+                        # JSON抽出
+                        json_match = re.search(r'\{.*\}', res, re.DOTALL)
+                        if json_match:
+                            data = json.loads(json_match.group())
+                            st.session_state['practice_data'] = {
+                                'script': data.get('script'),
+                                'question': data.get('question'),
+                                'options': data.get('options', []),
+                                'answer': data.get('answer'),
+                                'explanation': data.get('explanation'),
+                                'type': 'listening'
+                            }
+                        else:
+                            st.error("データの作成に失敗しました。もう一度押してください。")
+                    except:
+                        st.error("エラーが発生しました。もう一度押してください。")
+                
+                else:
+                    # 通常問題用プロンプト
+                    p_normal = f"""
+                    公立高校入試レベルの「{train_menu}」の問題を1問作成してください。
+                    
+                    【厳守フォーマット】
+                    ===QUESTION===
+                    (問題文のみ)
+                    
+                    ===ANSWER===
+                    (模範解答と解説)
                     """
                     res = ask_gemini_robust(p_normal)
-                    st.session_state['practice_q'] = res
-                    # 表示用に分割（正解は隠す）
-                    if "【正解と解説】" in res:
-                        st.session_state['practice_q_display'] = res.split("【正解と解説】")[0]
-                    else:
-                        st.session_state['practice_q_display'] = res
+                    question = ""
+                    answer = ""
+                    if "===QUESTION===" in res: question = res.split("===QUESTION===")[1].split("===ANSWER===")[0].strip()
+                    if "===ANSWER===" in res: answer = res.split("===ANSWER===")[1].strip()
+                    if not question: question = res
+                    
+                    st.session_state['practice_data'] = {
+                        'question': question,
+                        'answer': answer,
+                        'type': 'normal'
+                    }
 
-        # 問題表示エリア
-        if st.session_state['practice_q']:
+        # --- 表示エリア ---
+        p_data = st.session_state['practice_data']
+        
+        if p_data:
             st.markdown("---")
-            st.markdown("#### 📝 問題")
             
-            # リスニングの場合の音声プレイヤー
-            if train_menu == "リスニング" and st.session_state['practice_script']:
+            # === リスニング形式 ===
+            if p_data.get('type') == 'listening':
+                st.write("🔈 **リスニング音声**")
                 if gTTS is None:
-                    st.error("⚠️ `gTTS` ライブラリがインストールされていません。")
+                    st.error("⚠️ `gTTS` ライブラリがありません。")
                 else:
-                    st.write("🔈 **音声を再生して解答してください**")
-                    audio_data = text_to_speech(st.session_state['practice_script'])
+                    # スクリプトを読み上げ
+                    audio_data = text_to_speech(p_data['script'])
                     if audio_data:
                         st.audio(audio_data, format='audio/mp3')
-            
-            st.markdown(st.session_state.get('practice_q_display', ''))
-            
-            st.markdown("---")
-            st.write("📷 **解答をアップロードして採点**")
-            user_ans_img = st.file_uploader("解答の写真をアップロード", type=['jpg', 'png', 'jpeg'], key="practice_up")
-            
-            if user_ans_img and st.button("💯 採点・フィードバック"):
-                with st.spinner("AI先生が採点中..."):
-                    # 全体の情報（正解含む）とユーザー画像を渡す
-                    prompt_check = f"""
-                    以下の問題データに基づき、生徒の解答画像を採点してください。
-                    
-                    【問題データ（正解含む）】
-                    {st.session_state['practice_q']}
-                    
-                    採点結果、添削、改善アドバイスをわかりやすく出力してください。
-                    """
-                    img = PIL.Image.open(user_ans_img)
-                    res_check = ask_gemini_robust(prompt_check, [img])
-                    st.session_state['practice_a'] = res_check
-            
-            if st.session_state['practice_a']:
-                st.success("✅ 採点完了！")
-                st.markdown(st.session_state['practice_a'])
+
+                st.markdown("#### 📝 問題")
+                st.markdown(p_data.get('question', ''))
                 
-                # 正解データの表示（トグル）
-                with st.expander("模範解答を表示する"):
-                    st.markdown(st.session_state['practice_q'])
+                # 選択肢ボタン
+                options = p_data.get('options', [])
+                if options:
+                    user_sel = st.radio("解答を選択:", options, key="lis_radio")
+                    
+                    if st.button("回答する"):
+                        st.markdown("---")
+                        if user_sel == p_data.get('answer'):
+                            st.success(f"🙆‍♂️ 正解！ ({user_sel})")
+                        else:
+                            st.error(f"🙅‍♂️ 不正解... 正解は「{p_data.get('answer')}」です。")
+                        
+                        st.markdown("### 解説")
+                        st.markdown(p_data.get('explanation'))
+                        st.markdown("**スクリプト:**")
+                        st.code(p_data.get('script'))
+            
+            # === 通常記述形式 ===
+            else:
+                st.markdown("#### 📝 問題")
+                st.markdown(p_data.get('question', ''))
+                
+                st.markdown("---")
+                with st.expander("🫣 正解・解説を見る"):
+                    st.markdown(p_data.get('answer'))
+                
+                st.markdown("---")
+                st.write("📷 **(記述の場合) 解答をアップロードしてAI添削**")
+                user_ans_img = st.file_uploader("解答の写真をアップロード", type=['jpg', 'png', 'jpeg'], key="practice_up")
+                
+                if user_ans_img and st.button("💯 添削してもらう"):
+                    with st.spinner("AI先生が採点中..."):
+                        prompt_check = f"""
+                        以下の問題と正解データに基づき、生徒の解答画像を厳しめに採点してください。
+                        
+                        【問題】
+                        {p_data.get('question')}
+                        
+                        【正解・解説】
+                        {p_data.get('answer')}
+                        
+                        採点結果、添削、改善アドバイスを出力してください。
+                        """
+                        img = PIL.Image.open(user_ans_img)
+                        res_check = ask_gemini_robust(prompt_check, [img])
+                        st.markdown("### 👩‍🏫 添削結果")
+                        st.markdown(res_check)
 
 else:
     st.info("👆 サイドバーからCSVを読み込むか、ファイルをアップロードしてください。")
